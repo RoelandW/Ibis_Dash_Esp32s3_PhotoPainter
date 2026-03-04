@@ -1,12 +1,23 @@
 // ╔══════════════════════════════════════════════════════════════════════════════╗
 // ║                    🦤 IBIS DASH - USER READY VERSION 🦤                      ║
 // ║                                                                              ║
-// ║  VERSION 4.0 - USB COMPOSITE DEVICE (PC-FRIENDLY)                            ║
-// ║  • NEW: Board identifies as "Ibis Dash" in Device Manager!                   ║
-// ║  • NEW: USB Composite Device (CDC + HID) prevents PC power management        ║
-// ║  • PCs treat HID devices as essential - no more USB disconnects!             ║
+// ║  VERSION 5.1 - SMART REFRESH + CYCLING SPORTS                                ║
+// ║  • NEW: No unnecessary screen redraws (only draws when data changes)         ║
+// ║  • NEW: Goal-exceeded display (+% and +km above goal)                        ║
+// ║  • NEW: Cycling mode auto-includes all Strava ride variants                  ║
+// ║  • NEW: Cycling shows Average Speed instead of Pace                          ║
+// ║  • USB Composite Device (CDC + HID) prevents PC power management             ║
+// ║  • Board identifies as "Ibis Dash" in Device Manager!                        ║
 // ║  • NEVER sleeps on USB - foolproof triple verification                       ║
 // ║  • Ignores false low battery readings on USB                                 ║
+// ║                                                                              ║
+// ║  CHANGES FROM V4.0:                                                          ║
+// ║  1. Prevent unnecessary redraws: screen only updates when new activity       ║
+// ║     detected. Button press always redraws.                                   ║
+// ║  2. Goal exceeded: shows +% and +km instead of "X km to go"                 ║
+// ║  3. Cycling: sport=Ride auto-includes Ride, VirtualRide, EBikeRide,          ║
+// ║     GravelRide, MountainBikeRide, Handcycle, Velomobile. Latest activity     ║
+// ║     shows Average Speed (km/h) instead of Pace.                              ║
 // ║                                                                              ║
 // ║  This version has NO personal credentials - ready for end users!             ║
 // ║  All configuration is stored in NVS (flash) and set via Ibis Setup app.      ║
@@ -14,26 +25,15 @@
 // ║  FIRST TIME SETUP:                                                           ║
 // ║  1. Upload this sketch to your ESP32-S3-PhotoPainter                         ║
 // ║  2. You'll see the setup screen with ibis logos                              ║
-// ║  3. Press KEY button on back to enter pairing mode (30 min)                  ║
-// ║  4. Open Ibis Setup app, connect, and configure WiFi + Strava                ║
-// ║  5. Save - the board becomes a Strava dashboard!                             ║
+// ║  3. Connect board with USB-C and open the Ibis Setup app                     ║
+// ║  4. Configure WiFi + Strava and save                                         ║
+// ║  5. The board becomes a Strava dashboard!                                    ║
 // ║                                                                              ║
 // ║  USB IDENTITY (how PCs see this board):                                      ║
 // ║  • Product Name: "Ibis Dash"                                                 ║
 // ║  • Manufacturer: "Ibis"                                                      ║
 // ║  • Shows as composite device: USBSerial Port + HID                           ║
 // ║  • PCs will NOT aggressively power-manage this device                        ║
-// ║                                                                              ║
-// ║  FEATURES:                                                                   ║
-// ║  + Setup screen with pixel art ibis logos when unconfigured                  ║
-// ║  + Wakes from sleep when USB connected (for easy editing!)                   ║
-// ║  + NEVER sleeps on USB - foolproof triple verification                       ║
-// ║  + Configurable refresh intervals (hourly/12h/daily/weekly)                  ║
-// ║  + Configurable tracking period (weekly/monthly/yearly)                      ║
-// ║  + Configurable sport type (Run/Ride/Swim/Hike/Walk)                         ║
-// ║  + Custom title/username support                                             ║
-// ║  + Weekly stats: Monday to Sunday                                            ║
-// ║  + Wipe command to clear all user data                                       ║
 // ║                                                                              ║
 // ║  ARDUINO IDE SETTINGS:                                                       ║
 // ║  >> Board: ESP32S3 Dev Module                                                ║
@@ -57,12 +57,12 @@
 #include <GxEPD2_7C.h>
 
 // Custom fonts
-#include "Fonts/fonnts_com_Maison_Neue_Bold9pt7b.h"
-#include "Fonts/fonnts_com_Maison_Neue_Bold18pt7b.h"
-#include "Fonts/fonnts_com_Maison_Neue_Bold24pt7b.h"
-#include "Fonts/fonnts_com_Maison_Neue_Light9pt7b.h"
-#include "Fonts/fonnts_com_Maison_Neue_Light15pt7b.h"
-#include "Fonts/fonnts_com_Maison_Neue_Light18pt7b.h"
+#include <Fonts/fonnts_com_Maison_Neue_Bold9pt7b.h>
+#include <Fonts/fonnts_com_Maison_Neue_Bold18pt7b.h>
+#include <Fonts/fonnts_com_Maison_Neue_Bold24pt7b.h>
+#include <Fonts/fonnts_com_Maison_Neue_Light9pt7b.h>
+#include <Fonts/fonnts_com_Maison_Neue_Light15pt7b.h>
+#include <Fonts/fonnts_com_Maison_Neue_Light18pt7b.h>
 
 #include <Wire.h>
 #include "XPowersLib.h"
@@ -134,8 +134,6 @@ static const int FACTORY_RESET_HOLD_MS = 5000;
 
 #define uS_TO_S_FACTOR 1000000ULL
 
-#define KILOMETERS true
-
 // Tracking period options
 #define TRACK_YEARLY   0
 #define TRACK_MONTHLY  1
@@ -148,46 +146,19 @@ static const int FACTORY_RESET_HOLD_MS = 5000;
 #define SPORT_HIKE  "Hike"
 #define SPORT_WALK  "Walk"
 
-// ===============================
-// SPORT TYPE GROUPS (top of file)
-// ===============================
-
-// What should count as "Ride" when user selects Ride
-static const char* const RIDE_TYPES[] = {
+// ── Cycling activity types that all count when SPORT_TYPE == "Ride" ──────────
+// Strava uses these exact type strings in their API responses.
+static const char* CYCLING_TYPES[] = {
   "Ride",
-  "VirtualRide",      // Zwift usually ends up here
-  "EBikeRide",        // optional, but people may want this included
-  "MountainBikeRide"  // optional, but people may want this included
+  "VirtualRide",
+  "EBikeRide",
+  "GravelRide",
+  "MountainBikeRide",
+  "Handcycle",
+  "Velomobile"
 };
+static const int CYCLING_TYPES_COUNT = 7;
 
-// What should count as "Run" when user selects Run
-static const char* const RUN_TYPES[] = {
-  "Run",
-  "VirtualRun"
-};
-
-// Helper: check if a string equals any string in a list
-bool inList(const String& value, const char* const* list, size_t count) {
-  for (size_t i = 0; i < count; i++) {
-    if (value == list[i]) return true;
-  }
-  return false;
-}
-
-// Main matcher: user selects SPORT_TYPE (Ride/Run/Swim/Hike/Walk)
-// We accept "attached" types for Ride and Run by default.
-// Everything else stays exact-match (compat with your existing logic).
-bool matchesSelectedSport(const String& selected, const String& actType) {
-  if (selected == "Ride") {
-    return inList(actType, RIDE_TYPES, sizeof(RIDE_TYPES) / sizeof(RIDE_TYPES[0]));
-  }
-  if (selected == "Run") {
-    return inList(actType, RUN_TYPES, sizeof(RUN_TYPES) / sizeof(RUN_TYPES[0]));
-  }
-
-  // Default behavior: exact match for other sports
-  return (actType == selected);
-}
 
 // =============================================================================
 // SECTION 4: RTC MEMORY VARIABLES (survive deep sleep)
@@ -200,7 +171,7 @@ RTC_DATA_ATTR time_t lastNtpSyncEpoch = 0;  // Track when we last synced NTP
 RTC_DATA_ATTR int dashYear = 0;
 RTC_DATA_ATTR int dashMonth = 0;
 RTC_DATA_ATTR int dashWeek = 0;
-RTC_DATA_ATTR float distDone = 0;
+RTC_DATA_ATTR float kmDone = 0;
 RTC_DATA_ATTR float timeHours = 0;
 RTC_DATA_ATTR int activitiesCount = 0;
 RTC_DATA_ATTR int rapidBootCount = 0;
@@ -208,6 +179,13 @@ RTC_DATA_ATTR int rapidBootCount = 0;
 // Token caching - survives deep sleep
 RTC_DATA_ATTR char cachedAccessToken[256] = {0};
 RTC_DATA_ATTR time_t tokenExpiresAt = 0;
+
+// ── Change #1: Smart redraw tracking ─────────────────────────────────────────
+// We compare these "snapshot" values against freshly-fetched data.
+// If nothing changed, we skip the display refresh (saves e-ink life and time).
+// Stored in RTC so they survive deep sleep.
+RTC_DATA_ATTR float  lastDrawnKmDone         = -1.0;  // -1 = never drawn
+RTC_DATA_ATTR int    lastDrawnActivitiesCount = -1;
 
 
 // =============================================================================
@@ -217,7 +195,6 @@ RTC_DATA_ATTR time_t tokenExpiresAt = 0;
 XPowersAXP2101 PMU;
 Preferences preferences;
 String serialInputBuffer = "";
-String distUnit = KILOMETERS ? "km" : "mi";
 
 GxEPD2_7C<GxEPD2_730c_GDEP073E01, GxEPD2_730c_GDEP073E01::HEIGHT> display(
   GxEPD2_730c_GDEP073E01(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY)
@@ -264,10 +241,10 @@ String accessToken = "";
 String lastTitle = "";
 String lastLine = "";
 String lastPolyline = "";
-float lastDist = 0;        // Last activity distance in km/mi (dependent on KILOMETERS value)
-int lastMovingSecs = 0;       // Last activity moving time in seconds
-int lastAvgWatts = 0;         // Last activity average power (watts) - mainly for rides
-String lastDateStr = "";      // Last activity date e.g. "2 January"
+float lastDistKm = 0;        // Last activity distance in km
+int lastMovingSecs = 0;      // Last activity moving time in seconds
+float lastAvgSpeedKph = 0.0; // Last activity average speed in km/h (cycling)
+String lastDateStr = "";     // Last activity date e.g. "2 January"
 bool isUsbConnected = false;
 bool wasUsbConnected = false;
 float batteryPercentage = 0.0;
@@ -364,7 +341,7 @@ void loadConfiguration() {
   USBSerial.print("  WiFi SSID: "); USBSerial.println(WIFI_SSID.length() > 0 ? WIFI_SSID : "(not set)");
   USBSerial.print("  User Name: "); USBSerial.println(USER_NAME.length() > 0 ? USER_NAME : "(not set)");
   USBSerial.print("  Sport Type: "); USBSerial.println(SPORT_TYPE);
-  USBSerial.print("  Goal: "); USBSerial.print(YEARLY_GOAL); USBSerial.println(distUnit);
+  USBSerial.print("  Goal: "); USBSerial.print(YEARLY_GOAL); USBSerial.println(" km");
   USBSerial.print("  Refresh Hours: "); USBSerial.println(REFRESH_HOURS);
   USBSerial.print("  Track Period: "); 
   switch(TRACK_PERIOD) {
@@ -377,6 +354,23 @@ void loadConfiguration() {
 
 bool hasStravaCredentials() {
   return (CLIENT_ID.length() > 0 && CLIENT_SECRET.length() > 0 && REFRESH_TOKEN.length() > 0);
+}
+
+// ── Change #4 helper: returns true if a given Strava type counts as "cycling" ─
+bool isCyclingType(const String& actType) {
+  for (int i = 0; i < CYCLING_TYPES_COUNT; i++) {
+    if (actType == CYCLING_TYPES[i]) return true;
+  }
+  return false;
+}
+
+// Returns true if actType matches the currently configured SPORT_TYPE filter.
+// When SPORT_TYPE == "Ride", all cycling variants are accepted.
+bool activityMatchesSport(const String& actType) {
+  if (SPORT_TYPE == SPORT_RIDE) {
+    return isCyclingType(actType);
+  }
+  return (actType == SPORT_TYPE);
 }
 
 
@@ -451,9 +445,13 @@ bool checkFactoryReset() {
         bootCount = 0;
         rapidBootCount = 0;
         lastStravaFetchEpoch = 0;
-        distDone = 0;
+        kmDone = 0;
         timeHours = 0;
         activitiesCount = 0;
+        
+        // Reset smart-redraw snapshot
+        lastDrawnKmDone = -1.0;
+        lastDrawnActivitiesCount = -1;
         
         USBSerial.println("[OK] Factory reset complete - restarting...");
         delay(500);
@@ -592,10 +590,7 @@ void printBatteryStatus() {
   isCharging = PMU.isCharging();
   
   // Battery percentage based on voltage
-  // Charge target is 4.1V, so 4.05V+ = 100% when on USB
-  // On battery: 4.2V = 100%, 3.3V = 0%
   if (isUsbConnected) {
-    // When USB connected, battery reads slightly lower due to load
     if (batteryVoltage >= 4.05) batteryPercentage = 100;
     else if (batteryVoltage >= 3.95) batteryPercentage = 90;
     else if (batteryVoltage >= 3.85) batteryPercentage = 75;
@@ -606,13 +601,11 @@ void printBatteryStatus() {
     else batteryPercentage = 5;
     
     // CRITICAL FIX: If battery shows <20% on USB, PMU reading is unreliable
-    // This happens on some PCs/users - IGNORE IT
     if (batteryPercentage < 20) {
       USBSerial.print(" [⚠️  PMU UNRELIABLE - ignoring false low reading] ");
-      batteryPercentage = 50;  // Force reasonable charge level
+      batteryPercentage = 50;
     }
   } else {
-    // On battery only
     if (batteryVoltage >= 4.10) batteryPercentage = 100;
     else if (batteryVoltage >= 4.00) batteryPercentage = 90;
     else if (batteryVoltage >= 3.90) batteryPercentage = 75;
@@ -624,14 +617,12 @@ void printBatteryStatus() {
   }
   
   // CRITICAL FIX: NEVER enable low battery mode when USB connected
-  // USB = charging = always use RED colors (normal mode)
   if (isUsbConnected || USBSerial) {
-    lowBatteryMode = false;  // Force normal mode when any USB connection exists
+    lowBatteryMode = false;
   } else {
     lowBatteryMode = (batteryPercentage < LOW_BATTERY_THRESHOLD);
   }
   
-  // Print status
   USBSerial.print("Battery: ");
   USBSerial.print(batteryPercentage);
   USBSerial.print("% (");
@@ -655,7 +646,6 @@ void printBatteryStatus() {
 // SECTION 10: USB COMPOSITE DEVICE INITIALIZATION
 // =============================================================================
 
-// Custom HID device class - just provides the descriptor, never sends data
 class IbisDummyHID : public USBHIDDevice {
 public:
   IbisDummyHID() {}
@@ -665,40 +655,25 @@ public:
     return sizeof(ibisHidReportDescriptor);
   }
   
-  // We never send reports - this device just exists for USB identity
   void _onOutput(uint8_t report_id, const uint8_t* buffer, uint16_t len) {
-    // Intentionally empty - we don't process HID output
+    // Intentionally empty
   }
 };
 
 IbisDummyHID ibisDummyDevice;
 
 void initUSBComposite() {
-  // Set custom USB device identity - this is what PCs see in Device Manager
   USB.productName("Ibis Dash");
   USB.manufacturerName("Ibis");
-  
-  // Use Espressif's VID (0x303A) - safe for hobbyist/small projects
-  // Custom PID to distinguish from generic ESP32 devices
   USB.VID(0x303A);
-  USB.PID(0x8001);  // Custom PID within Espressif's range
+  USB.PID(0x8001);
   
-  // Initialize the dummy HID device - this makes it a composite device
-  // Windows will see: CDC (serial port) + HID (vendor device)
-  // The HID interface prevents Windows from power-managing the device
   ibishid.addDevice(&ibisDummyDevice, sizeof(ibisHidReportDescriptor));
   ibishid.begin();
   
-  // Initialize CDC serial BEFORE starting the USB stack
-  // The PC will try to read descriptors immediately on USB.begin(),
-  // so all interfaces (CDC + HID) must be ready first.
-  // If CDC isn't initialized, the descriptor response is malformed
-  // and Windows reports "Device Descriptor Request Failed".
   USBSerial.begin();
-  USBSerial.setTxTimeoutMs(0);  // Don't block if no PC is listening (battery mode)
+  USBSerial.setTxTimeoutMs(0);
   
-  // Start the USB stack - this makes the device visible to the PC
-  // All interfaces are now registered and ready for enumeration
   USB.begin();
   
   usbCompositeStarted = true;
@@ -761,9 +736,6 @@ void blinkLED(int times) {
 // =============================================================================
 
 void drawIbisLogo(int x, int y, const uint8_t* logoData, uint16_t w, uint16_t h) {
-  // Draw a 4bpp logo from PROGMEM
-  // Colors: 0=BLACK, 1=WHITE, 4=RED
-  
   for (uint16_t row = 0; row < h; row++) {
     for (uint16_t col = 0; col < w; col += 2) {
       uint16_t byteIndex = (row * w + col) / 2;
@@ -774,7 +746,6 @@ void drawIbisLogo(int x, int y, const uint8_t* logoData, uint16_t w, uint16_t h)
       
       uint16_t color1, color2;
       
-      // Map to e-ink colors
       switch(pixel1) {
         case 0: color1 = GxEPD_BLACK; break;
         case 4: color1 = GxEPD_RED; break;
@@ -786,7 +757,6 @@ void drawIbisLogo(int x, int y, const uint8_t* logoData, uint16_t w, uint16_t h)
         default: color2 = GxEPD_WHITE; break;
       }
       
-      // Only draw non-white pixels for transparency effect
       if (color1 != GxEPD_WHITE) {
         display.drawPixel(x + col, y + row, color1);
       }
@@ -806,12 +776,10 @@ void drawSetupScreen() {
   USBSerial.println("=== Drawing Setup Screen ===");
   feedWatchdog();
   
-  // Power stabilization before display refresh
   USBSerial.println("Stabilizing power...");
   delay(2000);
   feedWatchdog();
   
-  // Re-read PMU to ensure stable readings
   PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
   delay(500);
   feedWatchdog();
@@ -824,7 +792,6 @@ void drawSetupScreen() {
   do {
     display.fillScreen(GxEPD_WHITE);
     
-    // Header bar - "IBIS SETUP"
     display.fillRect(0, 0, W, 80, GxEPD_RED);
     display.setFont(&fonnts_com_Maison_Neue_Bold24pt7b);
     display.setTextColor(GxEPD_WHITE);
@@ -836,8 +803,6 @@ void drawSetupScreen() {
     display.setCursor((W - tw) / 2, 55);
     display.print(headerText);
     
-    // Draw both ibis logos side by side (150x150)
-    // Positioned a bit lower for better balance
     int logoY = 100;
     int logoSpacing = 60;
     int logo1X = (W / 2) - IBIS_LOGO_CENTERED_WIDTH - (logoSpacing / 2);
@@ -846,12 +811,9 @@ void drawSetupScreen() {
     drawIbisLogo(logo1X, logoY, ibis_logo_centered, IBIS_LOGO_CENTERED_WIDTH, IBIS_LOGO_CENTERED_HEIGHT);
     drawIbisLogo(logo2X, logoY, ibis_logo_cycle, IBIS_LOGO_CYCLE_WIDTH, IBIS_LOGO_CYCLE_HEIGHT);
     
-    // Instructions - below logos with good spacing
-    // Positioned lower on screen
     int textStartY = logoY + IBIS_LOGO_CENTERED_HEIGHT + 70;
     int lineSpacing = 45;
     
-    // Line 1 - BOLD
     display.setFont(&fonnts_com_Maison_Neue_Bold18pt7b);
     display.setTextColor(GxEPD_BLACK);
     
@@ -860,7 +822,6 @@ void drawSetupScreen() {
     display.setCursor((W - tw) / 2, textStartY);
     display.print(line1);
     
-    // Line 2 - not bold
     display.setFont(&fonnts_com_Maison_Neue_Light15pt7b);
     
     String line2 = "Connect board with USB-C";
@@ -868,7 +829,6 @@ void drawSetupScreen() {
     display.setCursor((W - tw) / 2, textStartY + lineSpacing);
     display.print(line2);
     
-    // Line 3 - not bold
     String line3 = "Run ibis.exe and follow the instructions";
     display.getTextBounds(line3, 0, 0, &tx, &ty, &tw, &th);
     display.setCursor((W - tw) / 2, textStartY + lineSpacing * 2);
@@ -876,10 +836,8 @@ void drawSetupScreen() {
     
   } while (display.nextPage());
   
-  // Wait for display to finish
   epd_wait_busy();
   
-  // Post-refresh stabilization - reinit PMU
   delay(500);
   PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
   pmu_configure_awake();
@@ -905,7 +863,6 @@ void connectWiFi() {
   USBSerial.print("Connecting to WiFi: ");
   USBSerial.println(WIFI_SSID);
   
-  // Power stabilization
   for (int i = 0; i < 3; i++) {
     delay(1000);
     feedWatchdog();
@@ -935,10 +892,7 @@ void connectWiFi() {
 }
 
 bool testWiFiConnection() {
-  // Test if WiFi credentials are valid by attempting to connect
-  if (WIFI_SSID.length() == 0) {
-    return false;
-  }
+  if (WIFI_SSID.length() == 0) return false;
   
   USBSerial.println("Testing WiFi connection...");
   
@@ -956,13 +910,9 @@ bool testWiFiConnection() {
   
   bool success = (WiFi.status() == WL_CONNECTED);
   
-  if (success) {
-    USBSerial.println(" WiFi OK!");
-  } else {
-    USBSerial.println(" WiFi FAILED!");
-  }
+  if (success) USBSerial.println(" WiFi OK!");
+  else         USBSerial.println(" WiFi FAILED!");
   
-  // Disconnect after test
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
   
@@ -975,7 +925,6 @@ void disconnectWiFi() {
 }
 
 void initTime() {
-  // Skip NTP sync if we synced recently (saves WiFi time)
   time_t now;
   time(&now);
   if (lastNtpSyncEpoch > 0 && (now - lastNtpSyncEpoch) < 43200) {
@@ -1012,7 +961,6 @@ bool refreshAccessToken() {
     return false;
   }
   
-  // Check if cached token is still valid (with 5 min buffer)
   time_t now;
   time(&now);
   if (cachedAccessToken[0] != '\0' && tokenExpiresAt > 0 && now < (tokenExpiresAt - 300)) {
@@ -1040,7 +988,6 @@ bool refreshAccessToken() {
     accessToken = doc["access_token"].as<String>();
     int expiresIn = doc["expires_in"] | 21600;
     
-    // Cache the token
     strncpy(cachedAccessToken, accessToken.c_str(), sizeof(cachedAccessToken) - 1);
     cachedAccessToken[sizeof(cachedAccessToken) - 1] = '\0';
     time(&now);
@@ -1057,7 +1004,6 @@ bool refreshAccessToken() {
   }
 }
 
-// Get timestamps for tracking period
 void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) {
@@ -1076,11 +1022,8 @@ void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
   
   switch (TRACK_PERIOD) {
     case TRACK_WEEKLY: {
-      // Monday to Sunday (wday: Mon=1, Sun=0)
-      // Calculate days since Monday
       int daysSinceMonday = (wday == 0) ? 6 : wday - 1;
       
-      // Start of week (Monday 00:00)
       start.tm_year = year - 1900;
       start.tm_mon = month;
       start.tm_mday = day - daysSinceMonday;
@@ -1088,7 +1031,6 @@ void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
       start.tm_min = 0;
       start.tm_sec = 0;
       
-      // End of week (next Monday 00:00)
       end = start;
       end.tm_mday += 7;
       
@@ -1099,12 +1041,10 @@ void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
     }
     
     case TRACK_MONTHLY: {
-      // Start of month
       start.tm_year = year - 1900;
       start.tm_mon = month;
       start.tm_mday = 1;
       
-      // Start of next month
       end.tm_year = year - 1900;
       end.tm_mon = month + 1;
       end.tm_mday = 1;
@@ -1114,14 +1054,12 @@ void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
       break;
     }
     
-    default:  // TRACK_YEARLY
+    default:
     case TRACK_YEARLY: {
-      // Start of year
       start.tm_year = year - 1900;
       start.tm_mon = 0;
       start.tm_mday = 1;
       
-      // Start of next year
       end.tm_year = year - 1900 + 1;
       end.tm_mon = 0;
       end.tm_mday = 1;
@@ -1138,7 +1076,7 @@ void getTrackingPeriodTimestamps(long &afterTS, long &beforeTS) {
 void fetchStravaData() {
   if (!hasStravaCredentials()) {
     USBSerial.println("No Strava credentials - using placeholder data");
-    distDone = 0;
+    kmDone = 0;
     timeHours = 0;
     activitiesCount = 0;
     lastTitle = "No Strava";
@@ -1146,31 +1084,29 @@ void fetchStravaData() {
     lastPolyline = "";
     return;
   }
-
+  
   USBSerial.println("=== Fetching Strava Data ===");
   feedWatchdog();
-
-  // Reset stats
-  distDone = 0;
+  
+  kmDone = 0;
   timeHours = 0;
   activitiesCount = 0;
   lastTitle = "";
   lastLine = "";
   lastPolyline = "";
-  lastDist = 0;
+  lastDistKm = 0;
   lastMovingSecs = 0;
-  lastAvgWatts = 0;   // <-- added
+  lastAvgSpeedKph = 0.0;
   lastDateStr = "";
-
+  
   if (accessToken == "") {
     USBSerial.println("No access token");
     return;
   }
-
-  // Get timestamp range for tracking period
+  
   long afterTS, beforeTS;
   getTrackingPeriodTimestamps(afterTS, beforeTS);
-
+  
   USBSerial.print("Tracking period: ");
   switch(TRACK_PERIOD) {
     case TRACK_WEEKLY: USBSerial.println("Weekly"); break;
@@ -1178,43 +1114,45 @@ void fetchStravaData() {
     default: USBSerial.println("Yearly"); break;
   }
   USBSerial.print("Filtering for sport type: ");
-  USBSerial.println(SPORT_TYPE);
-
+  USBSerial.print(SPORT_TYPE);
+  if (SPORT_TYPE == SPORT_RIDE) USBSerial.print(" (+ all cycling variants)");
+  USBSerial.println();
+  
   bool gotLast = false;
   int page = 1;
-  int totalActivities = 0;  // Track all activities fetched
-
+  int totalActivities = 0;
+  
   while (true) {
     feedWatchdog();
-
+    
     HTTPClient http;
     String req = "https://www.strava.com/api/v3/athlete/activities?";
     req += "after=" + String(afterTS) + "&before=" + String(beforeTS);
     req += "&per_page=30&page=" + String(page);
-
+    
     http.begin(req);
     http.addHeader("Authorization", "Bearer " + accessToken);
-
+    
     int code = http.GET();
-
+    
     if (code != 200) {
       USBSerial.print("API error: ");
       USBSerial.println(code);
       http.end();
       break;
     }
-
+    
     String payload = http.getString();
 
-    // Only parse the fields we need — drastically reduces memory usage
+    // ── Change #4: also request average_speed field ───────────────────────────
     JsonDocument filter;
     filter[0]["type"] = true;
     filter[0]["name"] = true;
     filter[0]["start_date_local"] = true;
     filter[0]["distance"] = true;
     filter[0]["moving_time"] = true;
+    filter[0]["average_speed"] = true;               // m/s from Strava
     filter[0]["map"]["summary_polyline"] = true;
-    filter[0]["average_watts"] = true;   // <-- added
 
     JsonDocument doc;
 
@@ -1223,33 +1161,32 @@ void fetchStravaData() {
       http.end();
       break;
     }
-
+    
     if (!doc.is<JsonArray>()) {
       USBSerial.println("Response is not an array");
       http.end();
       break;
     }
-
+    
     JsonArray arr = doc.as<JsonArray>();
-
+    
     if (arr.size() == 0) {
       USBSerial.println("No more activities");
       http.end();
       break;
     }
-
+    
     USBSerial.print("Page ");
     USBSerial.print(page);
     USBSerial.print(": ");
     USBSerial.print(arr.size());
     USBSerial.println(" activities");
-
+    
     for (JsonObject act : arr) {
       totalActivities++;
-
+      
       String actType = act["type"].as<String>();
-
-      // Debug: show what we're comparing
+      
       if (totalActivities <= 3) {
         USBSerial.print("  Activity type: '");
         USBSerial.print(actType);
@@ -1257,25 +1194,20 @@ void fetchStravaData() {
         USBSerial.print(SPORT_TYPE);
         USBSerial.println("'");
       }
-
-      // Filter by selected sport type (includes virtual variants for Ride/Run)
-      if (matchesSelectedSport(SPORT_TYPE, actType)) {
+      
+      // ── Change #4: use unified match helper ───────────────────────────────
+      if (activityMatchesSport(actType)) {
         if (!gotLast) {
-          // Get last activity details with validation
           lastTitle = act["name"].as<String>();
-          if (lastTitle.length() == 0) {
-            lastTitle = "Untitled " + SPORT_TYPE;
-          }
-
+          if (lastTitle.length() == 0) lastTitle = "Untitled " + SPORT_TYPE;
+          
           String dt = act["start_date_local"].as<String>();
-
-          // Parse date into "2 February" format
-          // dt format from Strava: "2025-01-02T14:30:00Z"
+          
           if (dt.length() >= 10) {
             int month = dt.substring(5, 7).toInt();
-            int day = dt.substring(8, 10).toInt();
-            const char* monthNames[] = {"January", "February", "March", "April",
-                                        "May", "June", "July", "August",
+            int day   = dt.substring(8, 10).toInt();
+            const char* monthNames[] = {"January", "February", "March", "April", 
+                                        "May", "June", "July", "August", 
                                         "September", "October", "November", "December"};
             if (month >= 1 && month <= 12) {
               lastDateStr = String(day) + " " + monthNames[month - 1];
@@ -1285,58 +1217,50 @@ void fetchStravaData() {
           } else {
             lastDateStr = dt;
           }
-
+          
           float dkm = act["distance"].as<float>() / 1000.0;
           int movingSecs = act["moving_time"].as<int>();
           float hrs = movingSecs / 3600.0;
 
-          // Validate the numbers are real
+          // average_speed comes in m/s — convert to km/h
+          float avgSpeedMs  = act["average_speed"].as<float>();
+          float avgSpeedKph = avgSpeedMs * 3.6f;
+          
           if (dkm > 0 && dkm < 1000 && hrs > 0 && hrs < 100) {
-            lastDist = KILOMETERS ? dkm : (dkm * 0.62);
+            lastDistKm     = dkm;
             lastMovingSecs = movingSecs;
+            lastAvgSpeedKph = avgSpeedKph;
             lastLine = String(dkm, 1) + " km  " + String(hrs, 1) + "h  " + lastDateStr;
-
-            // Capture average power when available
-            if (!act["average_watts"].isNull()) {
-              lastAvgWatts = (int)act["average_watts"].as<float>();
-            } else {
-              lastAvgWatts = 0;
-            }
-
             gotLast = true;
-
+            
             if (!act["map"]["summary_polyline"].isNull()) {
               lastPolyline = act["map"]["summary_polyline"].as<String>();
             }
           }
         }
-
-        // Accumulate stats with validation
+        
         float distance = act["distance"].as<float>() / 1000.0;
-        float time = act["moving_time"].as<float>() / 3600.0;
-
-        // Only add if values are reasonable
+        float time     = act["moving_time"].as<float>() / 3600.0;
+        
         if (distance > 0 && distance < 1000 && time > 0 && time < 100) {
-          distDone += KILOMETERS ? distance : (distance * 0.62);
+          kmDone += distance;
           timeHours += time;
           activitiesCount++;
         }
       }
     }
-
+    
     http.end();
     page++;
-
-    // Safety: don't fetch more than 10 pages
+    
     if (page > 10) {
       USBSerial.println("Reached max pages (10)");
       break;
     }
-
-    delay(200);  // Be nice to Strava API
+    
+    delay(200);
   }
-
-  // Update timestamp
+  
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
     char timeStr[10];
@@ -1344,15 +1268,14 @@ void fetchStravaData() {
     lastUpdateTime = String(timeStr);
     lastStravaFetchEpoch = mktime(&timeinfo);
   }
-
+  
   USBSerial.println("=== Strava Fetch Complete ===");
   USBSerial.print("Total activities fetched: "); USBSerial.println(totalActivities);
   USBSerial.print("Matching activities ("); USBSerial.print(SPORT_TYPE); USBSerial.print("): ");
   USBSerial.println(activitiesCount);
-  USBSerial.print("Distance: "); USBSerial.print(distDone, 1); USBSerial.println(distUnit);
+  USBSerial.print("Distance: "); USBSerial.print(kmDone, 1); USBSerial.println(" km");
   USBSerial.print("Time: "); USBSerial.print(timeHours, 1); USBSerial.println(" hours");
-
-  // Validate we got reasonable data
+  
   if (totalActivities > 0 && activitiesCount == 0) {
     USBSerial.println("WARNING: Got activities but none matched sport type!");
     USBSerial.print("Check that SPORT_TYPE='");
@@ -1374,33 +1297,68 @@ bool shouldFetchStrava() {
   return (timeSinceLastFetch >= (time_t)fetchIntervalSeconds);
 }
 
+// ── Change #1: decide whether the display actually needs to be redrawn ────────
+// Returns true  → data changed, must draw
+// Returns false → nothing new, skip draw (unless forceRedraw is true)
+bool dataHasChangedSinceLastDraw() {
+  // Activity count changed
+  if (lastDrawnActivitiesCount != activitiesCount) {
+    USBSerial.print("[smart-redraw] Activity count changed (");
+    USBSerial.print(lastDrawnActivitiesCount);
+    USBSerial.print(" → ");
+    USBSerial.print(activitiesCount);
+    USBSerial.println(") → must draw");
+    return true;
+  }
+  // Distance changed by ≥ 0.05 km (floating-point guard)
+  if (fabsf(lastDrawnKmDone - kmDone) >= 0.05f) {
+    USBSerial.print("[smart-redraw] Distance changed (");
+    USBSerial.print(lastDrawnKmDone, 1);
+    USBSerial.print(" → ");
+    USBSerial.print(kmDone, 1);
+    USBSerial.println(" km) → must draw");
+    return true;
+  }
+  USBSerial.println("[smart-redraw] Data unchanged → skipping display refresh");
+  return false;
+}
+
+// Call this AFTER a successful draw to record the snapshot
+void recordDrawnSnapshot() {
+  lastDrawnKmDone          = kmDone;
+  lastDrawnActivitiesCount = activitiesCount;
+}
+
+
 // =============================================================================
 // SECTION 16: MAIN DASHBOARD DISPLAY
 // =============================================================================
 
 String getHeaderTitle() {
-  // Generate header title based on settings
+  if (CUSTOM_TITLE.length() > 0) return CUSTOM_TITLE;
+  
+  String name = (USER_NAME.length() > 0) ? USER_NAME + "'s " : "";
   String title = "";
   
-  // Use custom title if set
-  if (CUSTOM_TITLE.length() > 0) {
-    return CUSTOM_TITLE;
-  }
-  
-  // Build automatic title
-  String name = (USER_NAME.length() > 0) ? USER_NAME + "'s " : "";
-  
   switch (TRACK_PERIOD) {
-    case TRACK_WEEKLY:
-      title = name + SPORT_TYPE + " Week " + String(dashWeek);
+    case TRACK_WEEKLY: {
+      // "Strava Stats Week 21"
+      title = name + "Strava Stats Week " + String(dashWeek);
       break;
+    }
     case TRACK_MONTHLY: {
-      const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", 
-                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-      title = name + SPORT_TYPE + " " + months[dashMonth - 1] + " " + String(dashYear);
+      // "Strava Stats February"
+      const char* months[] = {"January", "February", "March", "April",
+                               "May", "June", "July", "August",
+                               "September", "October", "November", "December"};
+      int mi = dashMonth - 1;
+      if (mi < 0) mi = 0;
+      if (mi > 11) mi = 11;
+      title = name + "Strava Stats " + months[mi];
       break;
     }
     default:
+      // Yearly — keep original behaviour
       title = name + "Strava Stats " + String(dashYear);
       break;
   }
@@ -1409,8 +1367,7 @@ String getHeaderTitle() {
 }
 
 String getActivityLabel() {
-  // Return appropriate label based on sport type
-  if (SPORT_TYPE == "Run") return "RUNS";
+  if (SPORT_TYPE == "Run")  return "RUNS";
   if (SPORT_TYPE == "Ride") return "RIDES";
   if (SPORT_TYPE == "Swim") return "SWIMS";
   if (SPORT_TYPE == "Hike") return "HIKES";
@@ -1418,19 +1375,26 @@ String getActivityLabel() {
   return "ACTIVITIES";
 }
 
+// ── Change #4: label for the "latest activity" panel ─────────────────────────
+String getLatestActivityLabel() {
+  if (SPORT_TYPE == "Ride") return "LATEST RIDE";
+  if (SPORT_TYPE == "Run")  return "LATEST RUN";
+  if (SPORT_TYPE == "Swim") return "LATEST SWIM";
+  if (SPORT_TYPE == "Hike") return "LATEST HIKE";
+  if (SPORT_TYPE == "Walk") return "LATEST WALK";
+  return "LATEST " + SPORT_TYPE;
+}
+
 void drawDashboard() {
   USBSerial.println("=== Drawing Dashboard ===");
   feedWatchdog();
   
-  // Power stabilization
   delay(1000);
   feedWatchdog();
   
-  // Reinit PMU for accurate readings
   PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
   delay(500);
   
-  // Check power stability
   float currentVoltage = PMU.getBattVoltage() / 1000.0;
   bool usbOK = PMU.isVbusIn();
   
@@ -1444,7 +1408,6 @@ void drawDashboard() {
     }
   }
   
-  // CRITICAL: Full display reinitialization
   USBSerial.println("Reinitializing display hardware...");
   SPI.end();
   delay(100);
@@ -1455,12 +1418,12 @@ void drawDashboard() {
   delay(200);
   feedWatchdog();
   
-  // Calculate progress
-  float pct = (YEARLY_GOAL > 0) ? (distDone / YEARLY_GOAL) : 0;
-  if (pct > 1) pct = 1;
+  // ── Change #2: progress capped at 1.0, detect overflow ───────────────────
+  float pct = (YEARLY_GOAL > 0) ? (kmDone / YEARLY_GOAL) : 0;
   if (pct < 0) pct = 0;
+  bool goalExceeded = (pct > 1.0f);
+  float displayPct = (pct > 1.0f) ? 1.0f : pct;  // bar always max 100%
   
-  // Update colors
   if (lowBatteryMode) {
     C_HEADER = GxEPD_BLUE;
     C_TEXT_DIM = GxEPD_BLUE;
@@ -1488,24 +1451,15 @@ void drawDashboard() {
     int16_t tx1, ty1;
     uint16_t tw, th;
     
-    // ===== LAYOUT CALCULATION =====
-    // Two anchors:
-    //   Top: banner(70) + 46px = 116 (DISTANCE label baseline) - looks perfect
-    //   Bottom: H - 12 = 468 (same breathing room as status text)
-    //
-    // Fixed content between anchors = 200px
-    // Available space = 468 - 116 = 352px
-    // Two section gaps = (352 - 200) / 2 = 76px each
-    
     const int headerH = 70;
-    const int topAnchor = 121;           // DISTANCE label baseline
-    const int bottomAnchor = H - 12;     // 468 - values baseline
-    const int labelToValue = 36;         // Title to value within a section
-    const int barGapAbove = 16;          // Value to bar top
-    const int barH = 34;                 // Progress bar height (thicker)
-    const int barGapBelow = 20;          // Bar bottom to % text
-    const int headerGapSmall = 30;       // Date→headers and headers→values
-    const int sectionGap = 51;           // Even gap between major sections (was at 54)
+    const int topAnchor = 121;
+    const int bottomAnchor = H - 12;
+    const int labelToValue = 36;
+    const int barGapAbove = 16;
+    const int barH = 34;
+    const int barGapBelow = 20;
+    const int headerGapSmall = 30;
+    const int sectionGap = 51;
     
     // ===== HEADER =====
     display.fillRect(0, 0, W, headerH, C_HEADER);
@@ -1518,55 +1472,62 @@ void drawDashboard() {
     display.print(headerText);
     
     // ===== DISTANCE SECTION =====
-    int distLabelY = topAnchor;  // 116
+    int distLabelY = topAnchor;
     
     display.setFont(&fonnts_com_Maison_Neue_Bold18pt7b);
     display.setTextColor(C_TEXT_DIM);
     display.setCursor(margin + innerPad, distLabelY);
     display.print("DISTANCE");
     
-    int distValueY = distLabelY + labelToValue;  // 146
+    int distValueY = distLabelY + labelToValue;
     display.setFont(&fonnts_com_Maison_Neue_Light15pt7b);
     display.setTextColor(GxEPD_BLACK);
     display.setCursor(margin + innerPad, distValueY);
-    display.print(String(distDone, 1) 
-      + " "
-      + distUnit
-      + " / "
-      + String((int)YEARLY_GOAL)
-      + " " 
-      + distUnit);
+    display.print(String(kmDone, 1) + " km / " + String((int)YEARLY_GOAL) + " km");
     
-    // Progress bar
+    // Progress bar (capped at 100%)
     int barX = margin + innerPad;
-    int barY = distValueY + barGapAbove;  // 158
+    int barY = distValueY + barGapAbove;
     int barW = (W - 2 * margin) - 2 * innerPad;
     
     display.drawRect(barX, barY, barW, barH, GxEPD_BLACK);
     display.drawRect(barX + 1, barY + 1, barW - 2, barH - 2, GxEPD_BLACK);
     
-    int fillW = (int)((barW - 4) * pct);
+    int fillW = (int)((barW - 4) * displayPct);
     if (fillW > 0) {
       display.fillRect(barX + 2, barY + 2, fillW, barH - 4, GxEPD_GREEN);
     }
     
-    float distToGo = YEARLY_GOAL - distDone;
-    if (distToGo < 0) distToGo = 0;
+    // ── Change #2: below-bar text ─────────────────────────────────────────────
     int pctTextY = barY + barH + barGapBelow;
     display.setFont(&fonnts_com_Maison_Neue_Bold9pt7b);
     display.setTextColor(GxEPD_BLACK);
     display.setCursor(barX, pctTextY);
-    display.print(String(pct * 100, 1) 
-      + "% of goal  " 
-      + String(distToGo, 1) 
-      + distUnit
-      + " to go");
+    
+    if (goalExceeded) {
+      // Show how much above goal
+      float kmAbove  = kmDone - YEARLY_GOAL;
+      float pctAbove = (pct - 1.0f) * 100.0f;
+      char aboveBuf[64];
+      snprintf(aboveBuf, sizeof(aboveBuf),
+               "+%.1f%% above goal  +%.1f km above goal",
+               pctAbove, kmAbove);
+      display.print(aboveBuf);
+    } else {
+      // Normal: remaining to go
+      float kmToGo = YEARLY_GOAL - kmDone;
+      if (kmToGo < 0) kmToGo = 0;
+      char remBuf[64];
+      snprintf(remBuf, sizeof(remBuf),
+               "%.1f%% of goal  %.1f km to go",
+               displayPct * 100.0f, kmToGo);
+      display.print(remBuf);
+    }
     
     // ===== RUNS / TIME / LAST ROUTE =====
-    int runsLabelY = pctTextY + sectionGap;  // 280
-    int runsValueY = runsLabelY + labelToValue;  // 310
+    int runsLabelY = pctTextY + sectionGap;
+    int runsValueY = runsLabelY + labelToValue;
     
-    // Column positions (3 equal columns)
     int colGap = 14;
     int colW = (W - 2 * margin - 2 * colGap) / 3;
     int x1 = margin;
@@ -1609,7 +1570,6 @@ void drawDashboard() {
     display.setCursor(x3 + innerPad, runsLabelY);
     display.print("LAST ROUTE");
     
-    // Draw polyline
     int titleAreaHeight = 45;
     int polylineAreaX = x3;
     int polylineAreaY = routeTopY + titleAreaHeight;
@@ -1635,22 +1595,22 @@ void drawDashboard() {
         if (lonRange < 1e-6) lonRange = 1e-6;
         
         int drawMargin = 2;
-        int drawWidth = polylineAreaW - (2 * drawMargin);
+        int drawWidth  = polylineAreaW - (2 * drawMargin);
         int drawHeight = polylineAreaH - (2 * drawMargin);
         
         float routeAspect = lonRange / latRange;
-        float zoneAspect = (float)drawWidth / (float)drawHeight;
+        float zoneAspect  = (float)drawWidth / (float)drawHeight;
         
         int actualDrawWidth, actualDrawHeight;
         int offsetX = 0, offsetY = 0;
         
         if (routeAspect > zoneAspect) {
-          actualDrawWidth = drawWidth;
+          actualDrawWidth  = drawWidth;
           actualDrawHeight = (int)(drawWidth / routeAspect);
           offsetY = (drawHeight - actualDrawHeight) / 2;
         } else {
           actualDrawHeight = drawHeight;
-          actualDrawWidth = (int)(drawHeight * routeAspect);
+          actualDrawWidth  = (int)(drawHeight * routeAspect);
           offsetX = (drawWidth - actualDrawWidth) / 2;
         }
         
@@ -1675,68 +1635,68 @@ void drawDashboard() {
     }
     
     // ===== LATEST ACTIVITY PANEL =====
-    // Layout:
-    //   LATEST RUN
-    //   2 February - Afternoon Run
-    //   Distance    Pace       Time
-    //   8.09 km     5:08 /km   41m 35s  ← lands at bottomAnchor (468)
-    
-    int latestLabelY = runsValueY + sectionGap;  // 386
+    int latestLabelY = runsValueY + sectionGap;
     int latestW = colW * 2 + colGap;
     
-    // Row 1: "LATEST RUN" title
+    // Row 1: sport-specific label (e.g. "LATEST RIDE")
     display.setFont(&fonnts_com_Maison_Neue_Bold18pt7b);
     display.setTextColor(C_TEXT_DIM);
     display.setCursor(margin + innerPad, latestLabelY);
-    String sportLabel = SPORT_TYPE.substring(0, SPORT_TYPE.length() > 4 ? 4 : SPORT_TYPE.length());
-    sportLabel.toUpperCase();
-    display.print("LATEST " + sportLabel);
+    display.print(getLatestActivityLabel());
     
-    // Row 2: Date + activity name (e.g. "2 February - Afternoon Run")
-    int dateNameY = latestLabelY + labelToValue;  // 416
+    // Row 2: date
+    int dateNameY = latestLabelY + labelToValue;
     display.setFont(&fonnts_com_Maison_Neue_Light15pt7b);
     display.setTextColor(GxEPD_BLACK);
     display.setCursor(margin + innerPad, dateNameY);
     if (lastDateStr.length() > 0) {
       display.print(lastDateStr);
     } else if (lastTitle.length() > 0) {
-      display.print(lastTitle);  // Fallback if no date
+      display.print(lastTitle);
     }
     
-    // Row 3: Column headers
-    int colHeaderY = dateNameY + headerGapSmall;  // 442
+    // Row 3: column headers
+    int colHeaderY = dateNameY + headerGapSmall;
     int col1X = margin + innerPad;
     int col2X = margin + innerPad + (latestW - 2 * innerPad) / 3;
     int col3X = margin + innerPad + 2 * (latestW - 2 * innerPad) / 3;
-
+    
     display.setFont(&fonnts_com_Maison_Neue_Bold9pt7b);
     display.setTextColor(GxEPD_BLACK);
     display.setCursor(col1X, colHeaderY);
     display.print("Distance");
     display.setCursor(col2X, colHeaderY);
-    if (SPORT_TYPE == "Ride") display.print("Avg. Power");
-    else display.print("Pace");
+    // ── Change #4: cycling shows "Avg Speed" instead of "Pace" ───────────────
+    if (SPORT_TYPE == SPORT_RIDE) {
+      display.print("Avg Speed");
+    } else {
+      display.print("Pace");
+    }
     display.setCursor(col3X, colHeaderY);
     display.print("Time");
-
-    // Row 4: Values
+    
+    // Row 4: values
     int valY = colHeaderY + headerGapSmall;
     display.setFont(&fonnts_com_Maison_Neue_Light15pt7b);
     display.setTextColor(GxEPD_BLACK);
     
-    if (lastDist > 0) {
+    if (lastDistKm > 0) {
       display.setCursor(col1X, valY);
-      display.print(String(lastDist, 2) + distUnit);
+      display.print(String(lastDistKm, 2) + " km");
       
+      // ── Change #4: speed vs pace logic ────────────────────────────────────
       display.setCursor(col2X, valY);
-      if (lastDist > 0.01) {
-        int totalPaceSecs = (int)(lastMovingSecs / lastDist);
-        int paceMin = totalPaceSecs / 60;
-        int paceSec = totalPaceSecs % 60;
-        char paceBuf[12];
-        snprintf(paceBuf, sizeof(paceBuf), KILOMETERS ? "%d:%02d /km" : "%d:%02d /mi", paceMin, paceSec);
-        display.print(paceBuf);
+      if (SPORT_TYPE == SPORT_RIDE) {
+        // Average speed in km/h
+        if (lastAvgSpeedKph > 0.1f) {
+          char speedBuf[16];
+          snprintf(speedBuf, sizeof(speedBuf), "%.1f km/h", lastAvgSpeedKph);
+          display.print(speedBuf);
+        } else {
+          display.print("--");
+        }
       } else {
+        // Pace in min:sec /km (all non-cycling sports)
         if (lastDistKm > 0.01) {
           int totalPaceSecs = (int)(lastMovingSecs / lastDistKm);
           int paceMin = totalPaceSecs / 60;
@@ -1748,11 +1708,10 @@ void drawDashboard() {
           display.print("--");
         }
       }
-
-      // Time
+      
       display.setCursor(col3X, valY);
       int totalMin = lastMovingSecs / 60;
-      int timeSec = lastMovingSecs % 60;
+      int timeSec  = lastMovingSecs % 60;
       if (totalMin >= 60) {
         int timeH = totalMin / 60;
         int timeM = totalMin % 60;
@@ -1764,13 +1723,12 @@ void drawDashboard() {
         snprintf(timeBuf, sizeof(timeBuf), "%dm %02ds", totalMin, timeSec);
         display.print(timeBuf);
       }
-
     } else {
       display.setCursor(col1X, valY); display.print("--");
       display.setCursor(col2X, valY); display.print("--");
       display.setCursor(col3X, valY); display.print("--");
-    }    
-
+    }
+    
     // ===== STATUS INDICATOR =====
     char displayStr[40];
     
@@ -1812,18 +1770,20 @@ void drawDashboard() {
   USBSerial.flush();
   delay(500);
   
+  // ── Record snapshot so we can detect future changes ─────────────────────
+  recordDrawnSnapshot();
+  
   USBSerial.println("Dashboard update complete!");
 }
+
 
 // =============================================================================
 // SECTION 17: HIGH-LEVEL UPDATE FUNCTIONS
 // =============================================================================
 
 bool fetchStravaDataWithValidation() {
-  // Returns true if data was successfully fetched AND validated
   USBSerial.println("\n=== FETCHING & VALIDATING STRAVA DATA ===");
   
-  // Step 1: Connect WiFi
   USBSerial.println("Step 1: Connecting WiFi...");
   connectWiFi();
   
@@ -1832,16 +1792,14 @@ bool fetchStravaDataWithValidation() {
     return false;
   }
   USBSerial.println("[OK] WiFi connected");
-  delay(1000);  // Stabilization
+  delay(1000);
   feedWatchdog();
   
-  // Step 2: Sync time
   USBSerial.println("Step 2: Syncing time...");
   initTime();
   delay(500);
   feedWatchdog();
   
-  // Step 3: Refresh token
   USBSerial.println("Step 3: Refreshing access token...");
   if (!refreshAccessToken()) {
     USBSerial.println("[FAIL] Token refresh failed!");
@@ -1852,7 +1810,6 @@ bool fetchStravaDataWithValidation() {
   delay(500);
   feedWatchdog();
   
-  // Step 4: Fetch data
   USBSerial.println("Step 4: Fetching Strava activities...");
   fetchStravaData();
   delay(500);
@@ -1860,44 +1817,35 @@ bool fetchStravaDataWithValidation() {
   
   disconnectWiFi();
   
-  // Step 5: Validate results
   USBSerial.println("Step 5: Validating results...");
   USBSerial.print("  Activities: "); USBSerial.println(activitiesCount);
-  USBSerial.print("  Distance: "); USBSerial.print(distDone, 1); USBSerial.println(distUnit);
+  USBSerial.print("  Distance: "); USBSerial.print(kmDone, 1); USBSerial.println(" km");
   USBSerial.print("  Time: "); USBSerial.print(timeHours, 1); USBSerial.println(" hours");
   
-  // Data is valid if:
-  // - We have at least fetched (even 0 activities is valid)
-  // - Numbers are reasonable (not negative, not insanely large)
-  bool dataValid = (distDone >= 0 && distDone < 100000 && 
+  bool dataValid = (kmDone >= 0 && kmDone < 100000 && 
                     timeHours >= 0 && timeHours < 50000 &&
                     activitiesCount >= 0 && activitiesCount < 10000);
   
-  if (dataValid) {
-    USBSerial.println("[OK] Data validation passed!");
-  } else {
-    USBSerial.println("[FAIL] Data validation failed - values out of range!");
-  }
+  if (dataValid) USBSerial.println("[OK] Data validation passed!");
+  else           USBSerial.println("[FAIL] Data validation failed - values out of range!");
   
   return dataValid;
 }
 
-void updateStravaAndDisplay(bool forceFetch) {
+// ── Change #1: forceRedraw bypasses the change-detection check ───────────────
+void updateStravaAndDisplay(bool forceFetch, bool forceRedraw) {
   USBSerial.println("\n========== FULL UPDATE ==========");
   feedWatchdog();
   
   bool dataFetched = false;
   
   if (forceFetch || shouldFetchStrava()) {
-    // Try to fetch fresh data
     dataFetched = fetchStravaDataWithValidation();
     
     if (!dataFetched) {
       USBSerial.println("WARNING: Could not fetch Strava data!");
-      // Continue with cached/zero data
     }
   } else {
-    // Just update time
     connectWiFi();
     if (WiFi.status() == WL_CONNECTED) {
       initTime();
@@ -1912,8 +1860,14 @@ void updateStravaAndDisplay(bool forceFetch) {
     disconnectWiFi();
   }
   
-  // Get fresh battery reading
   printBatteryStatus();
+  
+  // ── Change #1: skip draw if nothing changed (unless forced) ──────────────
+  if (!forceRedraw && !dataHasChangedSinceLastDraw()) {
+    USBSerial.println(">>> No new data - skipping screen redraw <<<");
+    USBSerial.println("========== UPDATE COMPLETE (no draw) ==========\n");
+    return;
+  }
   
   USBSerial.println("Drawing dashboard...");
   delay(500);
@@ -1923,6 +1877,11 @@ void updateStravaAndDisplay(bool forceFetch) {
   resetCrashCounter();
   
   USBSerial.println("========== UPDATE COMPLETE ==========\n");
+}
+
+// Convenience overload — existing callers that pass only 2 args still work
+void updateStravaAndDisplay(bool forceFetch) {
+  updateStravaAndDisplay(forceFetch, false);
 }
 
 void updateDisplayOnly() {
@@ -1956,7 +1915,6 @@ void handleSerialCommands() {
         serialInputBuffer = "";
       }
     } else {
-      // Prevent buffer overflow
       if (serialInputBuffer.length() < 2048) {
         serialInputBuffer += c;
       }
@@ -1967,7 +1925,6 @@ void handleSerialCommands() {
 void processSerialCommand(String command) {
   command.trim();
   
-  // Debug: show what we received
   USBSerial.print("CMD[");
   USBSerial.print(command.length());
   USBSerial.print("]: ");
@@ -1986,15 +1943,12 @@ void processSerialCommand(String command) {
     saveConfigFromSerial(jsonStr);
   }
   else if (command == "WIPE_CONFIG") {
-    // Internal wipe - does NOT draw screen (used when updating settings)
     wipeConfig();
   }
   else if (command == "DELETE_DATA") {
-    // User-initiated delete - wipes AND shows setup screen
     wipeConfigAndShowSetup();
   }
   else if (command == "TEST_WIFI") {
-    // Test WiFi connection with current credentials
     loadConfiguration();
     if (WIFI_SSID.length() == 0) {
       USBSerial.println("NO_WIFI_CREDENTIALS");
@@ -2005,9 +1959,8 @@ void processSerialCommand(String command) {
     }
   }
   else if (command == "FETCH_STRAVA") {
-    // "Finish Setup" button in EXE - fetch fresh data and draw dashboard
     USBSerial.println("\n=== FINISH SETUP ===");
-    loadConfiguration();;
+    loadConfiguration();
     
     if (WIFI_SSID.length() == 0) {
       USBSerial.println("NO_WIFI_CREDENTIALS");
@@ -2036,16 +1989,14 @@ void processSerialCommand(String command) {
           
           USBSerial.println("STRAVA_OK");
           USBSerial.print("Activities: "); USBSerial.println(activitiesCount);
-          USBSerial.print("Distance: "); USBSerial.print(distDone); USBSerial.println(distUnit);
+          USBSerial.print("Distance: "); USBSerial.print(kmDone); USBSerial.println(" km");
           USBSerial.print("Time: "); USBSerial.print(timeHours); USBSerial.println(" hours");
           
-          // Update battery and draw
           printBatteryStatus();
           USBSerial.println("Drawing dashboard...");
-          drawDashboard();
+          drawDashboard();  // Always draws after FETCH_STRAVA command
           USBSerial.println("DASHBOARD_DRAWN");
           
-          // If on battery, request sleep after drawing
           if (!PMU.isVbusIn()) {
             USBSerial.println(">>> On battery - will sleep <<<");
             sleepRequested = true;
@@ -2055,13 +2006,11 @@ void processSerialCommand(String command) {
     }
   }
   else if (command == "SHOW_SETUP_SCREEN") {
-    // Draw setup screen (used after wipe)
     USBSerial.println("Drawing setup screen...");
     drawSetupScreen();
     USBSerial.println("SETUP_SCREEN_DRAWN");
   }
   else if (command == "GO_SLEEP") {
-    // Explicit sleep command
     USBSerial.println("Sleep requested");
     USBSerial.println("OK");
     delay(100);
@@ -2075,7 +2024,7 @@ void processSerialCommand(String command) {
   }
   else if (command == "PING") {
     USBSerial.println("PONG");
-    USBSerial.println("IBIS_DASH_V40");
+    USBSerial.println("IBIS_DASH_V51");
   }
   else if (command.length() > 0) {
     USBSerial.print("Unknown command: ");
@@ -2091,21 +2040,21 @@ void sendCurrentConfig() {
   
   DynamicJsonDocument doc(2048);
   
-  doc["ssid"] = preferences.getString("ssid", "");
-  doc["password"] = preferences.getString("password", "");
-  doc["name"] = preferences.getString("name", "");
-  doc["sport"] = preferences.getString("sport", "Run");
-  doc["goal"] = preferences.getFloat("goal", 1000.0);
-  doc["clientID"] = preferences.getString("clientID", "");
-  doc["clientSecret"] = preferences.getString("clientSecret", "");
-  doc["refreshToken"] = preferences.getString("refreshToken", "");
-  doc["refreshHours"] = preferences.getInt("refreshHours", 12);
-  doc["trackPeriod"] = preferences.getInt("trackPeriod", TRACK_YEARLY);
-  doc["title"] = preferences.getString("title", "");
-  doc["configured"] = (preferences.getString("ssid", "").length() > 0);
-  doc["hasStrava"] = (preferences.getString("clientID", "").length() > 0);
-  doc["firmwareVersion"] = "4.0";
-  doc["usbIdentity"] = "Ibis Dash";
+  doc["ssid"]          = preferences.getString("ssid", "");
+  doc["password"]      = preferences.getString("password", "");
+  doc["name"]          = preferences.getString("name", "");
+  doc["sport"]         = preferences.getString("sport", "Run");
+  doc["goal"]          = preferences.getFloat("goal", 1000.0);
+  doc["clientID"]      = preferences.getString("clientID", "");
+  doc["clientSecret"]  = preferences.getString("clientSecret", "");
+  doc["refreshToken"]  = preferences.getString("refreshToken", "");
+  doc["refreshHours"]  = preferences.getInt("refreshHours", 12);
+  doc["trackPeriod"]   = preferences.getInt("trackPeriod", TRACK_YEARLY);
+  doc["title"]         = preferences.getString("title", "");
+  doc["configured"]    = (preferences.getString("ssid", "").length() > 0);
+  doc["hasStrava"]     = (preferences.getString("clientID", "").length() > 0);
+  doc["firmwareVersion"] = "5.1";
+  doc["usbIdentity"]   = "Ibis Dash";
   
   preferences.end();
   
@@ -2134,71 +2083,44 @@ void saveConfigFromSerial(String jsonStr) {
   
   preferences.begin("config", false);
   
-  if (doc.containsKey("ssid")) {
-    preferences.putString("ssid", doc["ssid"].as<String>());
-    USBSerial.println("  - ssid saved");
-  }
-  if (doc.containsKey("password")) {
-    preferences.putString("password", doc["password"].as<String>());
-    USBSerial.println("  - password saved");
-  }
-  if (doc.containsKey("name")) {
-    preferences.putString("name", doc["name"].as<String>());
-  }
-  if (doc.containsKey("sport")) {
-    preferences.putString("sport", doc["sport"].as<String>());
-  }
-  if (doc.containsKey("goal")) {
-    preferences.putFloat("goal", doc["goal"].as<float>());
-  }
-  if (doc.containsKey("clientID")) {
-    preferences.putString("clientID", doc["clientID"].as<String>());
-    USBSerial.println("  - clientID saved");
-  }
-  if (doc.containsKey("clientSecret")) {
-    preferences.putString("clientSecret", doc["clientSecret"].as<String>());
-    USBSerial.println("  - clientSecret saved");
-  }
-  if (doc.containsKey("refreshToken")) {
-    preferences.putString("refreshToken", doc["refreshToken"].as<String>());
-    USBSerial.println("  - refreshToken saved");
-  }
-  if (doc.containsKey("refreshHours")) {
-    preferences.putInt("refreshHours", doc["refreshHours"].as<int>());
-  }
-  if (doc.containsKey("trackPeriod")) {
-    preferences.putInt("trackPeriod", doc["trackPeriod"].as<int>());
-  }
-  if (doc.containsKey("title")) {
-    preferences.putString("title", doc["title"].as<String>());
-  }
+  if (doc.containsKey("ssid"))          { preferences.putString("ssid",          doc["ssid"].as<String>());          USBSerial.println("  - ssid saved"); }
+  if (doc.containsKey("password"))      { preferences.putString("password",      doc["password"].as<String>());      USBSerial.println("  - password saved"); }
+  if (doc.containsKey("name"))          { preferences.putString("name",          doc["name"].as<String>()); }
+  if (doc.containsKey("sport"))         { preferences.putString("sport",         doc["sport"].as<String>()); }
+  if (doc.containsKey("goal"))          { preferences.putFloat ("goal",          doc["goal"].as<float>()); }
+  if (doc.containsKey("clientID"))      { preferences.putString("clientID",      doc["clientID"].as<String>());      USBSerial.println("  - clientID saved"); }
+  if (doc.containsKey("clientSecret"))  { preferences.putString("clientSecret",  doc["clientSecret"].as<String>());  USBSerial.println("  - clientSecret saved"); }
+  if (doc.containsKey("refreshToken"))  { preferences.putString("refreshToken",  doc["refreshToken"].as<String>());  USBSerial.println("  - refreshToken saved"); }
+  if (doc.containsKey("refreshHours"))  { preferences.putInt   ("refreshHours",  doc["refreshHours"].as<int>()); }
+  if (doc.containsKey("trackPeriod"))   { preferences.putInt   ("trackPeriod",   doc["trackPeriod"].as<int>()); }
+  if (doc.containsKey("title"))         { preferences.putString("title",         doc["title"].as<String>()); }
   
   preferences.end();
   
-  // Reload configuration
   loadConfiguration();
   
-  // Clear token cache if Strava credentials were updated
   if (doc.containsKey("clientID") || doc.containsKey("clientSecret") || doc.containsKey("refreshToken")) {
     cachedAccessToken[0] = '\0';
     tokenExpiresAt = 0;
     USBSerial.println("  - Token cache cleared");
   }
   
+  // Changing config may change what data is shown — invalidate snapshot so
+  // the next fetch always redraws
+  lastDrawnKmDone          = -1.0;
+  lastDrawnActivitiesCount = -1;
+  
   USBSerial.println("Configuration saved!");
   USBSerial.println("SUCCESS");
 }
 
 void wipeConfig() {
-  // Called by WIPE_CONFIG command - clears everything but does NOT draw
-  // (Used internally by EXE when updating settings)
   USBSerial.println("Wiping all configuration...");
   
   preferences.begin("config", false);
   preferences.clear();
   preferences.end();
   
-  // Clear runtime variables
   WIFI_SSID = "";
   WIFI_PASS = "";
   CLIENT_ID = "";
@@ -2208,36 +2130,34 @@ void wipeConfig() {
   CUSTOM_TITLE = "";
   isConfigured = false;
   
-  // Clear RTC data
-  distDone = 0;
+  kmDone = 0;
   timeHours = 0;
   activitiesCount = 0;
   lastStravaFetchEpoch = 0;
   lastNtpSyncEpoch = 0;
   
-  // Clear cached data
   lastTitle = "";
   lastLine = "";
   lastPolyline = "";
   lastUpdateTime = "";
-  lastDist = 0;
+  lastDistKm = 0;
   lastMovingSecs = 0;
+  lastAvgSpeedKph = 0.0;
   lastDateStr = "";
   
-  // Clear token cache
   cachedAccessToken[0] = '\0';
   tokenExpiresAt = 0;
+  
+  // Reset smart-redraw snapshot
+  lastDrawnKmDone          = -1.0;
+  lastDrawnActivitiesCount = -1;
   
   USBSerial.println("Configuration wiped!");
   USBSerial.println("WIPED");
 }
 
 void wipeConfigAndShowSetup() {
-  // Called by DELETE_DATA command - clears everything AND shows setup screen
-  // (Used when user explicitly deletes all data)
-  wipeConfig();  // First wipe
-  
-  // Then draw setup screen
+  wipeConfig();
   USBSerial.println("Drawing setup screen...");
   drawSetupScreen();
   USBSerial.println("SETUP_SCREEN_DRAWN");
@@ -2257,11 +2177,9 @@ void print_wakeup_reason() {
   switch(wakeup_reason) {
     case ESP_SLEEP_WAKEUP_EXT0:
       USBSerial.println("Wakeup: USB connected! (GPIO 21 - PMU IRQ)");
-      // USB wake is NOT manual wake - just stay idle for commands
       wasManualWake = false;
       
-      // Verify USB is actually connected
-      delay(500);  // Give PMU time to stabilize
+      delay(500);
       if (PMU.isVbusIn()) {
         USBSerial.println("  ✓ USB confirmed connected");
         USBSerial.println("  → Staying idle, waiting for serial commands");
@@ -2272,7 +2190,7 @@ void print_wakeup_reason() {
       
     case ESP_SLEEP_WAKEUP_EXT1:
       USBSerial.println("Wakeup: BOOT button pressed");
-      wasManualWake = true;  // Only button press is manual wake
+      wasManualWake = true;
       USBSerial.println("  → Will fetch fresh Strava data");
       break;
       
@@ -2298,7 +2216,6 @@ void print_wakeup_reason() {
 void go_to_deep_sleep() {
   USBSerial.println("\n========== ENTERING DEEP SLEEP ==========");
   
-  // Check USB status before sleeping
   bool usbNowConnected = PMU.isVbusIn();
   USBSerial.print("USB status before sleep: ");
   USBSerial.println(usbNowConnected ? "CONNECTED" : "DISCONNECTED");
@@ -2306,16 +2223,14 @@ void go_to_deep_sleep() {
   if (usbNowConnected) {
     USBSerial.println("WARNING: USB is connected - should not sleep!");
     USBSerial.println("Returning to loop() instead of sleeping...");
-    return;  // Don't sleep if USB is connected!
+    return;
   }
   
-  // Re-read config from NVS to get the latest refresh hours
   preferences.begin("config", true);
   REFRESH_HOURS = preferences.getInt("refreshHours", 12);
   bool hasConfig = (preferences.getString("ssid", "").length() > 0);
   preferences.end();
   
-  // Calculate sleep duration based on configuration
   uint64_t sleepDuration;
   if (!hasConfig) {
     sleepDuration = SLEEP_DURATION_UNCONFIGURED_US;
@@ -2330,27 +2245,21 @@ void go_to_deep_sleep() {
   feedWatchdog();
   disconnectWiFi();
   
-  // Configure wake sources
   USBSerial.println("Configuring wake sources:");
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   
-  // 1. Timer wake (for scheduled refresh)
   esp_sleep_enable_timer_wakeup(sleepDuration);
   USBSerial.print("  ✓ Timer: ");
   USBSerial.print(REFRESH_HOURS);
   USBSerial.println(" hours");
   
-  // 2. BOOT button wake (GPIO 0)
   const uint64_t button_mask = 1ULL << GPIO_NUM_0;
   esp_sleep_enable_ext1_wakeup(button_mask, ESP_EXT1_WAKEUP_ANY_LOW);
   USBSerial.println("  ✓ BOOT button (GPIO 0)");
   
-  // 3. USB connection wake (GPIO 21 - PMU IRQ)
-  // PMU will trigger IRQ on GPIO 21 when USB is plugged in
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_21, 0);  // Wake on LOW (IRQ active low)
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_21, 0);
   USBSerial.println("  ✓ USB connection (GPIO 21 - PMU IRQ)");
   
-  // Configure PMU to generate IRQ on USB insertion
   pmu_prepare_for_esp32_sleep();
   
   USBSerial.println("Going to sleep NOW...");
@@ -2360,10 +2269,9 @@ void go_to_deep_sleep() {
   digitalWrite(ACT_LED_PIN, LOW);
   esp_task_wdt_delete(NULL);
   
-  delay(100);  // Give serial time to flush
+  delay(100);
   
   esp_deep_sleep_start();
-  // Never returns
 }
 
 
@@ -2371,37 +2279,26 @@ void go_to_deep_sleep() {
 // SECTION 20: ARDUINO SETUP
 // =============================================================================
 
-// RTC flag to prevent repeated setup screen draws on brownout reboot
 RTC_DATA_ATTR bool setupScreenDrawn = false;
 
 void setup() {
-  // Disable brownout detector
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
   
-  // Initialize PMU FIRST - before anything else
-  // This prevents the PMU from doing anything weird with VBUS during boot
   Wire.begin(PMU_SDA, PMU_SCL);
-  delay(50);  // Brief I2C stabilization
+  delay(50);
   
   if (PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL)) {
-    // Immediately accept USB power and stop PMU from interfering
     PMU.setVbusCurrentLimit(XPOWERS_AXP2101_VBUS_CUR_LIM_2000MA);
     PMU.disableVbusVoltageMeasure();
     PMU.disableSleep();
   }
   
-  // Initialize USB composite device (CDC + HID)
-  // USBSerial.begin() and USB.begin() both happen inside this function
-  // in the correct order so the PC can enumerate successfully
   initUSBComposite();
   
-  // Stabilize after USB enumeration
   delay(2000);
   
-  // Load configuration FIRST (only once at boot)
   loadConfiguration();
   
-  // Initialize pins
   pinMode(ACT_LED_PIN, OUTPUT);
   pinMode(EPD_RST, OUTPUT);
   pinMode(EPD_BUSY, INPUT);
@@ -2420,7 +2317,7 @@ void setup() {
   analogSetAttenuation(ADC_11db);
   
   USBSerial.println("\n======================================================================");
-  USBSerial.println("              IBIS DASH V4.0 - USB Composite Device");
+  USBSerial.println("              IBIS DASH V5.1 - Smart Refresh + Cycling");
   USBSerial.println("              Board identifies as: Ibis Dash (CDC+HID)");
   USBSerial.println("======================================================================");
   USBSerial.print("Configured: "); USBSerial.println(isConfigured ? "YES" : "NO");
@@ -2432,7 +2329,6 @@ void setup() {
   USBSerial.println("Checking factory reset...");
   if (checkFactoryReset()) {
     setupScreenDrawn = false;
-    // Never returns
   }
   USBSerial.println("[OK] No factory reset");
   
@@ -2446,8 +2342,7 @@ void setup() {
   pmu_irq_init();
   USBSerial.println("[OK] PMU IRQ ready");
   
-  // Verify PMU
-  delay(900); // Let I2C settle before talking to PMU
+  delay(900);
   USBSerial.println("Verifying PMU...");
   if (!PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL)) {
     USBSerial.println("PMU init failed!");
@@ -2461,18 +2356,15 @@ void setup() {
   pmu_configure_awake();
   USBSerial.println("[OK] PMU configured");
   
-  // Delay for PMU stabilization
   USBSerial.println("PMU stabilization (2s)...");
   delay(2000);
   feedWatchdog();
   printBatteryStatus();
   
-  // Check USB connection status EARLY
   bool usbConnected = PMU.isVbusIn();
   USBSerial.print("USB Status: ");
   USBSerial.println(usbConnected ? "CONNECTED" : "DISCONNECTED");
   
-  // Initialize display
   USBSerial.println("Initializing display...");
   SPI.begin(EPD_SCK, EPD_MISO, EPD_MOSI, EPD_CS);
   epd_deep_init();
@@ -2482,36 +2374,28 @@ void setup() {
   
   // ===== MAIN LOGIC =====
   
-  // Determine configuration state
-  bool hasWifi = (WIFI_SSID.length() > 0);
+  bool hasWifi  = (WIFI_SSID.length() > 0);
   bool hasStrava = hasStravaCredentials();
   bool fullyConfigured = hasWifi && hasStrava;
   
-  // Determine wake reason
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
-  bool isUsbWake = (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0);
-  bool isTimerWake = (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER);
+  bool isUsbWake    = (wakeup_reason == ESP_SLEEP_WAKEUP_EXT0);
+  bool isTimerWake  = (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER);
   bool isButtonWake = (wakeup_reason == ESP_SLEEP_WAKEUP_EXT1);
-  bool isPowerOn = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED);
+  bool isPowerOn    = (wakeup_reason == ESP_SLEEP_WAKEUP_UNDEFINED);
   
-  USBSerial.print("Has WiFi: "); USBSerial.println(hasWifi ? "YES" : "NO");
-  USBSerial.print("Has Strava: "); USBSerial.println(hasStrava ? "YES" : "NO");
+  USBSerial.print("Has WiFi: ");    USBSerial.println(hasWifi       ? "YES" : "NO");
+  USBSerial.print("Has Strava: "); USBSerial.println(hasStrava      ? "YES" : "NO");
   USBSerial.print("Fully Configured: "); USBSerial.println(fullyConfigured ? "YES" : "NO");
   USBSerial.print("Wake Type: ");
-  if (isUsbWake) USBSerial.println("USB");
-  else if (isTimerWake) USBSerial.println("TIMER");
+  if (isUsbWake)    USBSerial.println("USB");
+  else if (isTimerWake)  USBSerial.println("TIMER");
   else if (isButtonWake) USBSerial.println("BUTTON");
-  else if (isPowerOn) USBSerial.println("POWER-ON");
-  else USBSerial.println("UNKNOWN");
+  else if (isPowerOn)    USBSerial.println("POWER-ON");
+  else                   USBSerial.println("UNKNOWN");
   
   if (!fullyConfigured) {
-    // ===== NOT CONFIGURED - SETUP MODE =====
     USBSerial.println("\n>>> SETUP REQUIRED <<<");
-    
-    // Draw setup screen only if:
-    // 1. Never drawn before (setupScreenDrawn = false), OR
-    // 2. Power-on boot (fresh start)
-    // Skip drawing if USB wake (screen is already correct)
     
     if (!setupScreenDrawn || isPowerOn) {
       USBSerial.println("Drawing setup screen...");
@@ -2525,45 +2409,41 @@ void setup() {
     
     if (usbConnected) {
       USBSerial.println("\n>>> USB CONNECTED - Staying awake for setup <<<");
-      // Stay awake in loop(), never sleep while on USB
     } else {
       USBSerial.println("\n>>> ON BATTERY - Going to sleep <<<");
-      setupScreenDrawn = false;  // Reset for next boot
+      setupScreenDrawn = false;
       go_to_deep_sleep();
     }
     
   } else {
-    // ===== FULLY CONFIGURED - NORMAL OPERATION =====
     USBSerial.println("\n>>> FULLY CONFIGURED <<<");
     
-    // Decide if we should fetch and draw:
-    // - Timer wake: YES (scheduled refresh)
-    // - Button wake: YES (manual refresh)
-    // - USB wake: NO (just stay idle for commands)
-    // - Power-on: YES (first boot)
-    
     bool shouldUpdate = false;
+    bool forceRedraw  = false;  // button press always forces redraw
     
     if (isUsbWake) {
       USBSerial.println("USB wake - staying idle, NOT fetching data");
-      USBSerial.println("(Dashboard already on screen, waiting for commands)");
       shouldUpdate = false;
       
     } else if (isButtonWake) {
-      USBSerial.println("Button wake - fetching fresh data");
+      USBSerial.println("Button wake - fetching fresh data (forced redraw)");
       shouldUpdate = true;
+      forceRedraw  = true;  // BOOT button always redraws
       
     } else if (isTimerWake) {
       USBSerial.println("Timer wake - fetching scheduled update");
       shouldUpdate = true;
+      forceRedraw  = false;  // skip draw if nothing new
       
     } else if (isPowerOn || bootCount == 1) {
       USBSerial.println("First boot or power-on - fetching initial data");
       shouldUpdate = true;
+      forceRedraw  = true;   // always draw on first boot
       
     } else {
       USBSerial.println("Unknown wake - fetching data to be safe");
       shouldUpdate = true;
+      forceRedraw  = false;
     }
     
     if (shouldUpdate) {
@@ -2578,18 +2458,16 @@ void setup() {
       }
       
       bool forceFetch = (bootCount == 1) || wasManualWake || isTimerWake;
-      updateStravaAndDisplay(forceFetch);
+      updateStravaAndDisplay(forceFetch, forceRedraw);
       blinkLED(2);
     } else {
       USBSerial.println("Skipping update - dashboard already current");
     }
     
-    // Check USB status AFTER any updates
     usbConnected = PMU.isVbusIn();
     
     if (usbConnected) {
       USBSerial.println("\n>>> USB CONNECTED - Staying awake for editing <<<");
-      // Stay awake in loop(), never sleep while on USB
     } else {
       USBSerial.println("\n>>> ON BATTERY - Going to sleep <<<");
       go_to_deep_sleep();
@@ -2611,34 +2489,19 @@ void loop() {
   
   feedWatchdog();
   
-  // =====================================================================
-  // FOOLPROOF USB DETECTION - TRIPLE VERIFICATION
-  // Board NEVER sleeps unless ALL THREE checks confirm USB is gone:
-  // 1. PMU says disconnected
-  // 2. USBSerial is not working
-  // 3. 10 consecutive checks (10 seconds) confirm disconnection
-  // =====================================================================
-  
   unsigned long currentMillis = millis();
   
-  // Check USB status every 1 second
+  // ── Foolproof USB detection (unchanged from v4) ───────────────────────────
   if (currentMillis - lastUsbCheck >= 1000) {
     lastUsbCheck = currentMillis;
     
-    // TRIPLE VERIFICATION:
-    // Check 1: PMU reports USB status
     PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
     delay(50);
     bool pmuSaysConnected = PMU.isVbusIn();
-    
-    // Check 2: USBSerial connection is alive
-    bool serialWorks = (bool)USBSerial;
-    
-    // Check 3: Combined verification
+    bool serialWorks      = (bool)USBSerial;
     bool usbActuallyConnected = pmuSaysConnected || serialWorks;
     
     if (!usbActuallyConnected) {
-      // USB might be disconnected - start counting
       usbDisconnectCount++;
       
       USBSerial.print("⚠️  USB disconnect check ");
@@ -2649,7 +2512,6 @@ void loop() {
       USBSerial.print(serialWorks ? "WORKS" : "DEAD");
       USBSerial.println(")");
       
-      // ONLY sleep after 10 consecutive "disconnected" readings (10 seconds)
       if (usbDisconnectCount >= 10) {
         USBSerial.println("\n╔════════════════════════════════════════════╗");
         USBSerial.println("║  USB CONFIRMED DISCONNECTED (10 checks)   ║");
@@ -2661,7 +2523,6 @@ void loop() {
       }
       
     } else {
-      // USB is connected - reset counter
       if (usbDisconnectCount > 0) {
         USBSerial.print("[Ibis Dash] USB reconnected (was at ");
         USBSerial.print(usbDisconnectCount);
@@ -2671,18 +2532,15 @@ void loop() {
     }
   }
   
-  // Handle serial commands from Ibis Setup app
   handleSerialCommands();
   
-  // Check if sleep was requested (from serial command)
   if (sleepRequested) {
     sleepRequested = false;
     
-    // Triple-check USB before sleeping
     PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
     delay(50);
     bool pmuSaysConnected = PMU.isVbusIn();
-    bool serialWorks = (bool)USBSerial;
+    bool serialWorks      = (bool)USBSerial;
     
     if (!pmuSaysConnected && !serialWorks) {
       USBSerial.println("\n>>> Executing requested sleep (USB verified off) <<<");
@@ -2698,25 +2556,24 @@ void loop() {
     }
   }
   
-  // ===== BOOT BUTTON - Manual refresh =====
+  // ── BOOT BUTTON: manual refresh (always forces redraw) ──────────────────
   if (digitalRead(BOOT_BUTTON_PIN) == LOW) {
     USBSerial.println("\n>>> BOOT BUTTON - MANUAL REFRESH <<<");
     while (digitalRead(BOOT_BUTTON_PIN) == LOW) { delay(10); feedWatchdog(); }
     blinkLED(2);
     
     loadConfiguration();
-    bool hasWifi = (WIFI_SSID.length() > 0);
+    bool hasWifi   = (WIFI_SSID.length() > 0);
     bool hasStrava = hasStravaCredentials();
     
     if (hasWifi && hasStrava) {
-      USBSerial.println("Fetching fresh Strava data...");
-      updateStravaAndDisplay(true);
+      USBSerial.println("Fetching fresh Strava data (forced redraw)...");
+      updateStravaAndDisplay(true, true);  // forceFetch=true, forceRedraw=true
       
-      // Triple-check before sleeping
       PMU.begin(Wire, AXP2101_SLAVE_ADDRESS, PMU_SDA, PMU_SCL);
       delay(50);
       bool pmuSaysConnected = PMU.isVbusIn();
-      bool serialWorks = (bool)USBSerial;
+      bool serialWorks      = (bool)USBSerial;
       
       if (!pmuSaysConnected && !serialWorks) {
         USBSerial.println(">>> On battery - sleeping <<<");
@@ -2726,7 +2583,6 @@ void loop() {
         USBSerial.println(">>> USB connected - staying awake <<<");
       }
     } else {
-      // Not fully configured, show setup screen
       if (!setupScreenDrawn) {
         drawSetupScreen();
         setupScreenDrawn = true;
@@ -2734,12 +2590,10 @@ void loop() {
     }
   }
   
-  // ===== KEY BUTTON - Reserved for future use =====
+  // ── KEY BUTTON: reserved for future use ──────────────────────────────────
   if (digitalRead(USER_BUTTON_PIN) == LOW) {
-    USBSerial.println("\n>>> KEY BUTTON <<<");
     while (digitalRead(USER_BUTTON_PIN) == LOW) { delay(10); feedWatchdog(); }
-    blinkLED(1);
-    // No action currently
+    // No action assigned
   }
   
   // LED indicator - slow blink while ready for commands
@@ -2753,4 +2607,3 @@ void loop() {
   
   delay(100);
 }
-
