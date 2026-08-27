@@ -7,7 +7,7 @@ Version 4.0 - UI polish: auto-advance, Personalize tab, Options tab, consistent 
 Steps:
 1. Connect - Connect to board via USB (auto-loads existing config)
 2. WiFi - Enter WiFi credentials (tests connection)
-3. Strava - Enter API credentials, get refresh token
+3. Garmin - Register with Garmin Middleware
 4. Personalize - Name, sport, goal, refresh interval
 5. Options (🤌) - Delete data from board
 """
@@ -17,19 +17,21 @@ from tkinter import ttk, messagebox
 import serial
 import serial.tools.list_ports
 import json
+import os
 import time
 import webbrowser
 import threading
 import urllib.parse
 import urllib.request
+import urllib.error
 import http.server
 import socketserver
 import random
 
 APP_TITLE = "🪶 Ibis Setup 🪶"
-APP_VERSION = "4.1"
+APP_VERSION = "4.2"
 WINDOW_WIDTH = 650
-WINDOW_HEIGHT = 630
+WINDOW_HEIGHT = 750
 LOADING_WIDTH = 450
 LOADING_HEIGHT = 250
 BAUD_RATE = 115200
@@ -85,6 +87,9 @@ OAUTH_REDIRECT_URI = f"http://localhost:{OAUTH_REDIRECT_PORT}/callback"
 STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), "Library", "Application Support", "Ibis Setup")
+LOCAL_CONFIG_FILE = os.path.join(CONFIG_DIR, "saved_config.json")
+
 # Funny loading messages for different operations
 FUNNY_MESSAGES = {
     'connect': [
@@ -113,9 +118,8 @@ FUNNY_MESSAGES = {
         "Checking if the internet has worms..."
     ],
     'fetch_strava': [
-        "Ibis is stalking your Strava profile...",
+        "Ibis is asking Garmin for fresh stats...",
         "Ibis is counting your kilometers...",
-        "Ibis is judging your running pace...",
         "Fetching your athletic achievements...",
         "Ibis is very impressed with your stats...",
         "Downloading proof of your fitness..."
@@ -180,6 +184,7 @@ class IbisSetupWizard:
         self.root.title(f"{APP_TITLE} v{APP_VERSION}")
         self.root.configure(bg=COLOR_BG)
         self.root.resizable(False, False)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
         # Center window on screen
         self.root.update_idletasks()
@@ -192,7 +197,7 @@ class IbisSetupWizard:
         self.serial_conn = None
         self.connected = False
         self.current_step = 0
-        self.total_steps = 5  # Connect, WiFi, Strava, Personalize, Options
+        self.total_steps = 5  # Connect, WiFi, Garmin, Personalize, Options
         self.loading_overlay = None
         self.loading_animation_id = None
         
@@ -210,17 +215,168 @@ class IbisSetupWizard:
         self.client_id_var = tk.StringVar()
         self.client_secret_var = tk.StringVar()
         self.refresh_token_var = tk.StringVar()
+        self.middleware_url_var = tk.StringVar()
+        self.middleware_app_key_var = tk.StringVar()
+        self.ibis_token_var = tk.StringVar()
+        self.garmin_email_var = tk.StringVar()
+        self.garmin_password_var = tk.StringVar()
+        self.garmin_mfa_var = tk.StringVar()
+        self.maps_api_key_var = tk.StringVar()
         self.name_var = tk.StringVar()
         self.sport_var = tk.StringVar(value="Run")
+        self.sport2_var = tk.StringVar(value="")
         self.period_var = tk.StringVar(value="Yearly")
         self.goal_var = tk.StringVar(value="1000")
+        self.goal2_var = tk.StringVar(value="")
         self.refresh_var = tk.StringVar(value="Once a day")
         self.battery_var = tk.StringVar(value="~2 months battery")
         self.token_status_var = tk.StringVar(value="")
+        self.garmin_session_token = ""
+        self.garmin_mfa_token = ""
+
+        self._cache_save_after_id = None
+        self._suspend_cache_save = False
+        self.load_local_config()
+        self.install_cache_traces()
         
         self.create_ui()
         self.show_step(0)
         self.scan_ports()
+
+    # ==================== LOCAL CONFIG CACHE ====================
+    def get_form_cache(self):
+        """Return exactly what the user typed, including secrets, for local recall."""
+        return {
+            "ssid": self.ssid_var.get(),
+            "password": self.password_var.get(),
+            "clientID": self.client_id_var.get(),
+            "clientSecret": self.client_secret_var.get(),
+            "refreshToken": self.refresh_token_var.get(),
+            "dataSource": "garmin_middleware" if self.has_middleware_credentials() else "strava",
+            "middlewareUrl": self.middleware_url_var.get(),
+            "middlewareAppKey": self.middleware_app_key_var.get(),
+            "ibisToken": self.ibis_token_var.get(),
+            "mapsApiKey": self.maps_api_key_var.get(),
+            "name": self.name_var.get(),
+            "sport": self.sport_var.get(),
+            "sport2": self.sport2_var.get(),
+            "period": self.period_var.get(),
+            "goal": self.goal_var.get(),
+            "goal2": self.goal2_var.get(),
+            "refresh": self.refresh_var.get(),
+            "battery": self.battery_var.get(),
+        }
+
+    def apply_cached_config(self, config, allow_blank=False):
+        """Apply cached or board config without letting a blank board erase local fields."""
+        def set_if_allowed(var, key, default=""):
+            if key not in config:
+                return
+            value = config.get(key)
+            if value is None:
+                return
+            value = str(value)
+            if value or allow_blank:
+                var.set(value if value else default)
+
+        set_if_allowed(self.ssid_var, "ssid")
+        set_if_allowed(self.password_var, "password")
+        set_if_allowed(self.client_id_var, "clientID")
+        set_if_allowed(self.client_secret_var, "clientSecret")
+        set_if_allowed(self.refresh_token_var, "refreshToken")
+        set_if_allowed(self.middleware_url_var, "middlewareUrl")
+        set_if_allowed(self.middleware_app_key_var, "middlewareAppKey")
+        set_if_allowed(self.ibis_token_var, "ibisToken")
+        set_if_allowed(self.maps_api_key_var, "mapsApiKey")
+        set_if_allowed(self.name_var, "name")
+
+        if config.get("sport"):
+            self.sport_var.set(config.get("sport"))
+        if "sport2" in config and (config.get("sport2") or allow_blank):
+            self.sport2_var.set(config.get("sport2", ""))
+
+        if "goal" in config and (config.get("goal") not in ("", None) or allow_blank):
+            self.goal_var.set(str(config.get("goal", "1000") or "1000"))
+        if "goal2" in config and (config.get("goal2") not in ("", None) or allow_blank):
+            g2 = config.get("goal2", "")
+            self.goal2_var.set("" if g2 in (0, 0.0, "0", "0.0", None) else str(g2))
+
+        if config.get("period") in TRACK_PERIODS:
+            self.period_var.set(config.get("period"))
+        elif "trackPeriod" in config:
+            try:
+                idx = int(config.get("trackPeriod", 0))
+                if 0 <= idx < len(TRACK_PERIODS):
+                    self.period_var.set(TRACK_PERIODS[idx])
+            except (TypeError, ValueError):
+                pass
+
+        if config.get("refresh") in [o[0] for o in REFRESH_OPTIONS]:
+            self.refresh_var.set(config.get("refresh"))
+        elif "refreshHours" in config:
+            try:
+                hrs = int(config.get("refreshHours", 24))
+                for n, v, e in REFRESH_OPTIONS:
+                    if v == hrs:
+                        self.refresh_var.set(n)
+                        self.battery_var.set(e)
+                        break
+            except (TypeError, ValueError):
+                pass
+
+        if config.get("battery"):
+            self.battery_var.set(config.get("battery"))
+        else:
+            self.update_battery()
+
+        self.wifi_complete = bool(self.ssid_var.get().strip())
+        self.strava_complete = self.has_dashboard_credentials()
+
+    def load_local_config(self):
+        try:
+            with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
+                self.apply_cached_config(json.load(f), allow_blank=False)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            print(f"Could not load saved Ibis settings: {e}")
+
+    def install_cache_traces(self):
+        vars_to_watch = [
+            self.ssid_var, self.password_var, self.client_id_var,
+            self.client_secret_var, self.refresh_token_var, self.middleware_url_var,
+            self.middleware_app_key_var, self.ibis_token_var, self.maps_api_key_var,
+            self.name_var, self.sport_var, self.sport2_var, self.period_var,
+            self.goal_var, self.goal2_var, self.refresh_var, self.battery_var,
+        ]
+        for var in vars_to_watch:
+            var.trace_add("write", lambda *_: self.schedule_local_config_save())
+
+    def schedule_local_config_save(self):
+        if self._suspend_cache_save:
+            return
+        if self._cache_save_after_id:
+            try:
+                self.root.after_cancel(self._cache_save_after_id)
+            except Exception:
+                pass
+        self._cache_save_after_id = self.root.after(500, self.save_local_config)
+
+    def save_local_config(self):
+        self._cache_save_after_id = None
+        try:
+            os.makedirs(CONFIG_DIR, mode=0o700, exist_ok=True)
+            tmp_file = f"{LOCAL_CONFIG_FILE}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(self.get_form_cache(), f, indent=2)
+            os.chmod(tmp_file, 0o600)
+            os.replace(tmp_file, LOCAL_CONFIG_FILE)
+        except Exception as e:
+            print(f"Could not save Ibis settings: {e}")
+
+    def on_close(self):
+        self.save_local_config()
+        self.root.destroy()
     
     def create_ui(self):
         self.main_frame = tk.Frame(self.root, bg=COLOR_BG)
@@ -246,7 +402,7 @@ class IbisSetupWizard:
         indicator = tk.Frame(self.main_frame, bg=COLOR_BG)
         indicator.pack(fill=tk.X, pady=(0, 8))
         
-        steps = ["Connect", "WiFi", "Strava", "Personalize", "Options"]
+        steps = ["Connect", "WiFi", "Garmin", "Personalize", "Options"]
         self.step_labels = []
         self.step_dots = []
         
@@ -352,7 +508,7 @@ class IbisSetupWizard:
             self.next_btn.pack(side=tk.RIGHT)
         elif step_num == 2:
             self.show_strava_step()
-            self.next_btn.config(text="Save Strava \u2192", bg=COLOR_BTN_SUCCESS,
+            self.next_btn.config(text="Save Garmin \u2192", bg=COLOR_BTN_SUCCESS,
                                 activebackground=COLOR_BTN_SUCCESS_HOVER)
             self.next_btn.pack(side=tk.RIGHT)
         elif step_num == 3:
@@ -440,110 +596,136 @@ class IbisSetupWizard:
                       ).pack(side=tk.LEFT, padx=10)
         
         tk.Label(content, 
-                text="*WiFi only connects briefly to fetch Strava stats at each refresh interval.",
+                text="*WiFi only connects briefly to fetch Garmin stats at each refresh interval.",
                 bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9),
                 justify=tk.CENTER).pack(pady=(20, 0))
     
-    # ==================== STEP 3: STRAVA ====================
+    # ==================== STEP 3: GARMIN MIDDLEWARE ====================
     def show_strava_step(self):
         content = tk.Frame(self.content_frame, bg=COLOR_CARD, padx=30, pady=25)
         content.pack(fill=tk.BOTH, expand=True)
         
-        tk.Label(content, text=f"Connect Strava",
+        tk.Label(content, text="Connect Garmin Middleware",
                 font=('Segoe UI', 16, 'bold'), bg=COLOR_CARD, fg=COLOR_ACCENT).pack(pady=(0, 8))
-        
-        subtitle_frame = tk.Frame(content, bg=COLOR_CARD)
-        subtitle_frame.pack(pady=(0, 3))
-        tk.Label(subtitle_frame, text="Go to",
-                font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR).pack(side=tk.LEFT)
-        strava_link = tk.Label(subtitle_frame, text=" strava.com/settings/api ",
-                              font=('Segoe UI', 11, 'underline'), bg=COLOR_CARD, fg=COLOR_LINK, cursor='hand2')
-        strava_link.pack(side=tk.LEFT)
-        strava_link.bind('<Button-1>', lambda e: webbrowser.open("https://www.strava.com/settings/api"))
-        tk.Label(subtitle_frame, text="and find your API credentials.",
-                font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR).pack(side=tk.LEFT)
 
-        tk.Label(content, text="Fill in the Client ID and Client Secret below.",
+        tk.Label(content, text="Log in through your middleware. Ibis stores only the short board token.",
                 font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR).pack(pady=(0, 5))
-        
-        help_link = tk.Label(content, text="Don't have a Strava API yet? Click here for help!",
-                            bg=COLOR_CARD, fg=COLOR_LINK, font=('Segoe UI', 11, 'underline'), cursor='hand2')
-        help_link.pack(pady=(0, 15))
-        help_link.bind('<Button-1>', lambda e: self.show_strava_help())
-        
+
         form = tk.Frame(content, bg=COLOR_CARD)
         form.pack()
         
         row1 = tk.Frame(form, bg=COLOR_CARD)
         row1.pack(fill=tk.X, pady=5)
-        tk.Label(row1, text="Client ID:", bg=COLOR_CARD, fg=COLOR_TEXT,
-                font=('Segoe UI', 11), width=13, anchor='w').pack(side=tk.LEFT)
-        tk.Entry(row1, textvariable=self.client_id_var, width=30, font=('Segoe UI', 11)).pack(side=tk.LEFT)
+        tk.Label(row1, text="Middleware URL:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=16, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row1, textvariable=self.middleware_url_var, width=32, font=('Segoe UI', 11)).pack(side=tk.LEFT)
         
         row2 = tk.Frame(form, bg=COLOR_CARD)
         row2.pack(fill=tk.X, pady=5)
-        tk.Label(row2, text="Client Secret:", bg=COLOR_CARD, fg=COLOR_TEXT,
-                font=('Segoe UI', 11), width=13, anchor='w').pack(side=tk.LEFT)
-        tk.Entry(row2, textvariable=self.client_secret_var, width=30,
+        tk.Label(row2, text="App Key:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=16, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row2, textvariable=self.middleware_app_key_var, width=32,
                 font=('Segoe UI', 11), show='\u2022').pack(side=tk.LEFT)
-        
+
+        row3 = tk.Frame(form, bg=COLOR_CARD)
+        row3.pack(fill=tk.X, pady=5)
+        tk.Label(row3, text="Garmin Email:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=16, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row3, textvariable=self.garmin_email_var, width=32, font=('Segoe UI', 11)).pack(side=tk.LEFT)
+
+        row4 = tk.Frame(form, bg=COLOR_CARD)
+        row4.pack(fill=tk.X, pady=5)
+        tk.Label(row4, text="Garmin Password:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=16, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row4, textvariable=self.garmin_password_var, width=32,
+                font=('Segoe UI', 11), show='\u2022').pack(side=tk.LEFT)
+
+        row5 = tk.Frame(form, bg=COLOR_CARD)
+        row5.pack(fill=tk.X, pady=5)
+        tk.Label(row5, text="MFA Code:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=16, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row5, textvariable=self.garmin_mfa_var, width=14, font=('Segoe UI', 11)).pack(side=tk.LEFT)
+        tk.Label(row5, text="only when Garmin asks", bg=COLOR_CARD, fg=COLOR_TEXT_DIM,
+                font=('Segoe UI', 9)).pack(side=tk.LEFT, padx=(10, 0))
+
         token_section = tk.Frame(content, bg=COLOR_CARD)
-        token_section.pack(pady=(15, 0))
-        
-        tk.Button(token_section, text="\U0001F511 Let Ibis In! \U0001F511", command=self.start_oauth_flow,
+        token_section.pack(pady=(12, 0))
+
+        tk.Button(token_section, text="Connect Garmin", command=self.save_strava,
                  bg=COLOR_BTN_SUCCESS, fg=COLOR_BTN_TEXT, font=('Segoe UI', 12, 'bold'),
-                 relief=tk.FLAT, padx=25, pady=10, cursor='hand2', highlightthickness=0).pack()
-        
-        # Checkmark right under the button
-        if self.refresh_token_var.get():
-            tk.Label(token_section, text="\u2713 The Ibis has Strava access!", bg=COLOR_CARD,
+                 relief=tk.FLAT, padx=25, pady=8, cursor='hand2', highlightthickness=0).pack()
+
+        if self.garmin_mfa_token:
+            tk.Label(token_section, text="MFA required. Enter the code and click Save Garmin.",
+                    bg=COLOR_CARD, fg=COLOR_ACCENT, font=('Segoe UI', 10, 'bold')).pack(pady=(8, 0))
+        elif self.ibis_token_var.get():
+            tk.Label(token_section, text="\u2713 Ibis has a Garmin board token", bg=COLOR_CARD,
                     fg=COLOR_SUCCESS, font=('Segoe UI', 11, 'bold')).pack(pady=(8, 0))
+
+        tk.Label(content, text="Old Strava settings are still loaded for hidden debug compatibility.",
+                bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9)).pack(pady=(10, 0))
     
     # ==================== STEP 4: PERSONALIZE ====================
     def show_settings_step(self):
-        content = tk.Frame(self.content_frame, bg=COLOR_CARD, padx=30, pady=25)
+        content = tk.Frame(self.content_frame, bg=COLOR_CARD, padx=30, pady=15)
         content.pack(fill=tk.BOTH, expand=True)
-        
+
         tk.Label(content, text=f"Personalize Your Dashboard",
-                font=('Segoe UI', 16, 'bold'), bg=COLOR_CARD, fg=COLOR_ACCENT).pack(pady=(0, 8))
-        
+                font=('Segoe UI', 16, 'bold'), bg=COLOR_CARD, fg=COLOR_ACCENT).pack(pady=(0, 4))
+
         tk.Label(content, text="Personalize your dashboard, set your name, sport, and goals.",
-                font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR).pack(pady=(0, 20))
-        
+                font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR).pack(pady=(0, 10))
+
         form = tk.Frame(content, bg=COLOR_CARD)
         form.pack()
         
         row1 = tk.Frame(form, bg=COLOR_CARD)
-        row1.pack(fill=tk.X, pady=5)
+        row1.pack(fill=tk.X, pady=3)
         tk.Label(row1, text="Your Name:", bg=COLOR_CARD, fg=COLOR_TEXT,
                 font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
         tk.Entry(row1, textvariable=self.name_var, width=22, font=('Segoe UI', 11)).pack(side=tk.LEFT)
-        
-        tk.Label(form, text=f"Leave blank to display 'STRAVA STATS' as the title",
-                bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9)).pack(anchor='w', pady=(0, 5))
-        
+
+        tk.Label(form, text=f"Leave blank to display 'GARMIN STATS' as the title",
+                bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9)).pack(anchor='w', pady=(0, 3))
+
         row2 = tk.Frame(form, bg=COLOR_CARD)
-        row2.pack(fill=tk.X, pady=5)
-        tk.Label(row2, text="Sport Type:", bg=COLOR_CARD, fg=COLOR_TEXT,
+        row2.pack(fill=tk.X, pady=3)
+        tk.Label(row2, text="Sport 1:", bg=COLOR_CARD, fg=COLOR_TEXT,
                 font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
         ttk.Combobox(row2, textvariable=self.sport_var, values=SPORT_TYPES,
                     state='readonly', width=19).pack(side=tk.LEFT)
-        
+
         row3 = tk.Frame(form, bg=COLOR_CARD)
-        row3.pack(fill=tk.X, pady=5)
-        tk.Label(row3, text="Distance Goal (km):", bg=COLOR_CARD, fg=COLOR_TEXT,
+        row3.pack(fill=tk.X, pady=3)
+        tk.Label(row3, text="Goal 1 (km):", bg=COLOR_CARD, fg=COLOR_TEXT,
                 font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
         tk.Entry(row3, textvariable=self.goal_var, width=12, font=('Segoe UI', 11)).pack(side=tk.LEFT)
-        
+
+        row3b = tk.Frame(form, bg=COLOR_CARD)
+        row3b.pack(fill=tk.X, pady=3)
+        tk.Label(row3b, text="Sport 2 (optional):", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
+        ttk.Combobox(row3b, textvariable=self.sport2_var, values=[""] + SPORT_TYPES,
+                    state='readonly', width=19).pack(side=tk.LEFT)
+
+        row3c = tk.Frame(form, bg=COLOR_CARD)
+        row3c.pack(fill=tk.X, pady=3)
+        tk.Label(row3c, text="Goal 2 (km):", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row3c, textvariable=self.goal2_var, width=12, font=('Segoe UI', 11)).pack(side=tk.LEFT)
+
+        tk.Label(form, text="Leave Sport 2 empty for single-sport mode.",
+                bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9)).pack(anchor='w', pady=(0, 3))
+
         row4 = tk.Frame(form, bg=COLOR_CARD)
-        row4.pack(fill=tk.X, pady=5)
+        row4.pack(fill=tk.X, pady=3)
         tk.Label(row4, text="Tracking Period:", bg=COLOR_CARD, fg=COLOR_TEXT,
                 font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
         ttk.Combobox(row4, textvariable=self.period_var, values=TRACK_PERIODS,
                     state='readonly', width=19).pack(side=tk.LEFT)
         
         row5 = tk.Frame(form, bg=COLOR_CARD)
-        row5.pack(fill=tk.X, pady=5)
+        row5.pack(fill=tk.X, pady=3)
         tk.Label(row5, text="Refresh Interval:", bg=COLOR_CARD, fg=COLOR_TEXT,
                 font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
         combo = ttk.Combobox(row5, textvariable=self.refresh_var,
@@ -553,7 +735,16 @@ class IbisSetupWizard:
         
         tk.Label(row5, textvariable=self.battery_var, bg=COLOR_CARD,
                 fg=COLOR_SUCCESS, font=('Segoe UI', 10, 'bold')).pack(side=tk.LEFT, padx=(10, 0))
-    
+
+        row6 = tk.Frame(form, bg=COLOR_CARD)
+        row6.pack(fill=tk.X, pady=3)
+        tk.Label(row6, text="Google Maps Key:", bg=COLOR_CARD, fg=COLOR_TEXT,
+                font=('Segoe UI', 11), width=18, anchor='w').pack(side=tk.LEFT)
+        tk.Entry(row6, textvariable=self.maps_api_key_var, width=22, font=('Segoe UI', 11)).pack(side=tk.LEFT)
+
+        tk.Label(form, text="Optional. Shows a real map image for your route instead of a simple line drawing.",
+                bg=COLOR_CARD, fg=COLOR_TEXT_DIM, font=('Segoe UI', 9)).pack(anchor='w', pady=(0, 5))
+
     # ==================== STEP 5: OPTIONS ====================
     def show_options_step(self):
         content = tk.Frame(self.content_frame, bg=COLOR_CARD, padx=30, pady=25)
@@ -562,7 +753,7 @@ class IbisSetupWizard:
         tk.Label(content, text=" Delete Data From Board ",
                 font=('Segoe UI', 16, 'bold'), bg=COLOR_CARD, fg=COLOR_DANGER).pack(pady=(0, 8))
         
-        tk.Label(content, text="This will erase your WiFi credentials, Strava connection,\nand all personal settings from the board.",
+        tk.Label(content, text="This will erase your WiFi credentials, Garmin token,\nand all personal settings from the board.",
                 font=SUBTITLE_FONT, bg=COLOR_CARD, fg=SUBTITLE_COLOR,
                 justify=tk.CENTER).pack(pady=(0, 15))
         
@@ -681,7 +872,7 @@ class IbisSetupWizard:
                 font=('Segoe UI', 18, 'bold'),
                 bg=COLOR_LOADING_BG, fg=COLOR_SUCCESS).pack(pady=(0, 15))
         
-        tk.Label(center, text="The dashboard is now correctly displaying\nyour Strava stats! You can now:",
+        tk.Label(center, text="The dashboard is now correctly displaying\nyour Garmin stats! You can now:",
                 font=('Segoe UI', 11),
                 bg=COLOR_LOADING_BG, fg=COLOR_TEXT, justify=tk.CENTER).pack(pady=(0, 20))
         
@@ -724,6 +915,144 @@ class IbisSetupWizard:
             return float(goal_str)
         except ValueError:
             return None
+
+    def has_middleware_credentials(self):
+        return bool(
+            self.middleware_url_var.get().strip()
+            and self.middleware_app_key_var.get().strip()
+            and self.ibis_token_var.get().strip()
+        )
+
+    def has_legacy_strava_credentials(self):
+        return bool(
+            self.client_id_var.get().strip()
+            and self.client_secret_var.get().strip()
+            and self.refresh_token_var.get().strip()
+        )
+
+    def has_dashboard_credentials(self):
+        return self.has_middleware_credentials() or self.has_legacy_strava_credentials()
+
+    def build_board_config(self):
+        config = {
+            'ssid': self.ssid_var.get().strip(),
+            'password': self.password_var.get(),
+            'name': self.name_var.get().strip(),
+            'title': '',
+            'dataSource': 'garmin_middleware' if self.has_middleware_credentials() else 'strava',
+            'middlewareUrl': self.middleware_url_var.get().strip(),
+            'middlewareAppKey': self.middleware_app_key_var.get().strip(),
+            'ibisToken': self.ibis_token_var.get().strip(),
+            'clientID': self.client_id_var.get().strip(),
+            'clientSecret': self.client_secret_var.get().strip(),
+            'refreshToken': self.refresh_token_var.get().strip(),
+            'mapsApiKey': self.maps_api_key_var.get().strip(),
+            'sport': self.sport_var.get(),
+            'sport2': self.sport2_var.get(),
+            'goal2': float(self.goal2_var.get()) if self.goal2_var.get().strip() else 0,
+            'goal': self.get_goal_value() or 1000,
+            'trackPeriod': TRACK_PERIODS.index(self.period_var.get())
+        }
+        for n, v, _ in REFRESH_OPTIONS:
+            if n == self.refresh_var.get():
+                config['refreshHours'] = v
+                break
+        return config
+
+    def middleware_base_url(self):
+        url = self.middleware_url_var.get().strip().rstrip('/')
+        if url and not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+        return url
+
+    def middleware_json(self, method, path, body=None, bearer_token=None, timeout=60, app_key=True):
+        base_url = self.middleware_base_url()
+        if not base_url:
+            raise ValueError("Middleware URL is missing")
+
+        data = json.dumps(body).encode('utf-8') if body is not None else None
+        headers = {"Accept": "application/json"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        if app_key:
+            headers["X-App-Key"] = self.middleware_app_key_var.get().strip()
+        if bearer_token:
+            headers["Authorization"] = f"Bearer {bearer_token}"
+
+        req = urllib.request.Request(base_url + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode('utf-8')
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode('utf-8', errors='ignore')
+            try:
+                parsed = json.loads(detail)
+                detail = parsed.get('detail') or detail
+            except Exception:
+                pass
+            raise RuntimeError(f"Middleware HTTP {e.code}: {detail}") from e
+
+    def provision_garmin_middleware(self):
+        if self.has_middleware_credentials():
+            return True
+
+        if not self.middleware_url_var.get().strip():
+            raise ValueError("Enter your middleware URL first")
+        if not self.middleware_app_key_var.get().strip():
+            raise ValueError("Enter your middleware app key first")
+
+        self.update_loading("Checking middleware...")
+        self.middleware_json("GET", "/api/ping", timeout=15, app_key=False)
+
+        if not self.garmin_session_token:
+            if self.garmin_mfa_token:
+                code = self.garmin_mfa_var.get().strip()
+                if not code:
+                    return False
+                self.update_loading("Sending Garmin MFA code...")
+                result = self.middleware_json(
+                    "POST",
+                    "/api/mfa",
+                    body={"mfaToken": self.garmin_mfa_token, "code": code},
+                    timeout=60,
+                )
+                self.garmin_mfa_token = ""
+                self.garmin_mfa_var.set("")
+            else:
+                email = self.garmin_email_var.get().strip()
+                password = self.garmin_password_var.get()
+                if not email or not password:
+                    raise ValueError("Enter your Garmin email and password to register this board")
+                self.update_loading("Logging in to Garmin...")
+                result = self.middleware_json(
+                    "POST",
+                    "/api/login",
+                    body={"email": email, "password": password},
+                    timeout=90,
+                )
+                if result.get("status") == "mfa_required":
+                    self.garmin_mfa_token = result.get("mfaToken", "")
+                    return False
+
+            self.garmin_session_token = result.get("token", "")
+            if not self.garmin_session_token:
+                raise RuntimeError("Middleware login did not return a Garmin session token")
+
+        self.update_loading("Registering board token...")
+        registered = self.middleware_json(
+            "POST",
+            "/api/ibis/register",
+            bearer_token=self.garmin_session_token,
+            timeout=60,
+        )
+        ibis_token = registered.get("ibisToken", "")
+        if not ibis_token:
+            raise RuntimeError("Middleware did not return an Ibis token")
+        self.ibis_token_var.set(ibis_token)
+        self.garmin_password_var.set("")
+        self.garmin_session_token = ""
+        return True
     
     # ==================== NAVIGATION ====================
     def go_back(self):
@@ -876,7 +1205,7 @@ class IbisSetupWizard:
                 if self.wifi_complete and self.strava_complete:
                     self.show_step(3)  # Everything set up -> Personalize
                 elif self.wifi_complete:
-                    self.show_step(2)  # WiFi done -> Strava
+                    self.show_step(2)  # WiFi done -> Garmin
                 else:
                     self.show_step(1)  # Fresh board -> WiFi
             else:
@@ -895,38 +1224,52 @@ class IbisSetupWizard:
             return
         
         try:
-            start, end = response.find('{'), response.rfind('}') + 1
-            if start >= 0 and end > start:
-                c = json.loads(response[start:end])
-                
-                if c.get('ssid'):
-                    self.ssid_var.set(c.get('ssid', ''))
-                    self.password_var.set(c.get('password', ''))
-                    self.wifi_complete = True
-                
-                if c.get('clientID'):
-                    self.client_id_var.set(c.get('clientID', ''))
-                    self.client_secret_var.set(c.get('clientSecret', ''))
-                    self.refresh_token_var.set(c.get('refreshToken', ''))
-                    if c.get('clientID') and c.get('clientSecret') and c.get('refreshToken'):
-                        self.strava_complete = True
-                
-                self.name_var.set(c.get('name', ''))
-                self.sport_var.set(c.get('sport', 'Run'))
-                self.goal_var.set(str(c.get('goal', 1000)))
-                idx = c.get('trackPeriod', 0)
-                if idx < len(TRACK_PERIODS):
-                    self.period_var.set(TRACK_PERIODS[idx])
-                hrs = c.get('refreshHours', 24)
-                for n, v, e in REFRESH_OPTIONS:
-                    if v == hrs:
-                        self.refresh_var.set(n)
-                        self.battery_var.set(e)
-                        break
-                
+            json_text = self.extract_json_object(response)
+            if json_text:
+                c = json.loads(json_text)
+                if c.get('error'):
+                    print(f"Board config warning: {c.get('error')}; using locally saved settings.")
+                    return
+                board_has_config = bool(
+                    c.get('configured') or c.get('hasDashboard') or c.get('hasStrava') or
+                    c.get('ssid') or c.get('middlewareUrl') or c.get('ibisToken') or
+                    c.get('clientID') or c.get('mapsApiKey') or c.get('name')
+                )
+                self.apply_cached_config(c, allow_blank=board_has_config)
+                if board_has_config:
+                    self.save_local_config()
                 self.update_step_indicator()
         except Exception as e:
-            print(f"Auto-load failed: {e}")
+            print(f"Board config could not be parsed ({e}); using locally saved settings.")
+
+    def extract_json_object(self, text):
+        """Return the first balanced JSON object from a noisy serial response."""
+        start = text.find('{')
+        if start < 0:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == '\\':
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return text[start:i + 1]
+        return None
     
     def disconnect(self):
         if self.serial_conn:
@@ -1049,7 +1392,7 @@ class IbisSetupWizard:
                 "Are you sure you want to erase ALL settings?\n\n"
                 "This will remove:\n"
                 "\u2022 WiFi credentials\n"
-                "\u2022 Strava connection\n"
+                "\u2022 Garmin middleware token\n"
                 "\u2022 All personalization\n\n"
                 "This cannot be undone!\n\n"
                 "(This may take up to a minute)",
@@ -1061,17 +1404,36 @@ class IbisSetupWizard:
         response = self.send_command("DELETE_DATA", wait_for="SETUP_SCREEN_DRAWN", timeout=60)
         
         if response and "WIPED" in response:
+            if self._cache_save_after_id:
+                try:
+                    self.root.after_cancel(self._cache_save_after_id)
+                except Exception:
+                    pass
+                self._cache_save_after_id = None
+            self._suspend_cache_save = True
             self.ssid_var.set('')
             self.password_var.set('')
             self.name_var.set('')
             self.client_id_var.set('')
             self.client_secret_var.set('')
             self.refresh_token_var.set('')
+            self.middleware_url_var.set('')
+            self.middleware_app_key_var.set('')
+            self.ibis_token_var.set('')
+            self.garmin_email_var.set('')
+            self.garmin_password_var.set('')
+            self.garmin_mfa_var.set('')
+            self.garmin_session_token = ""
+            self.garmin_mfa_token = ""
+            self.maps_api_key_var.set('')
             self.sport_var.set('Run')
+            self.sport2_var.set('')
+            self.goal2_var.set('')
             self.goal_var.set('1000')
             self.period_var.set('Yearly')
             self.refresh_var.set('Once a day')
             self.battery_var.set('~2 months battery')
+            self._suspend_cache_save = False
             
             self.wifi_complete = False
             self.strava_complete = False
@@ -1088,25 +1450,11 @@ class IbisSetupWizard:
     def save_wifi(self):
         self.show_loading(f"{F} Saving WiFi {F}", self.get_funny_message('save_config'))
         
-        config = {
-            'ssid': self.ssid_var.get().strip(),
-            'password': self.password_var.get(),
-            'name': self.name_var.get().strip(),
-            'title': '',
-            'clientID': self.client_id_var.get().strip(),
-            'clientSecret': self.client_secret_var.get().strip(),
-            'refreshToken': self.refresh_token_var.get().strip(),
-            'sport': self.sport_var.get(),
-            'goal': self.get_goal_value() or 1000,
-            'trackPeriod': TRACK_PERIODS.index(self.period_var.get())
-        }
-        for n, v, _ in REFRESH_OPTIONS:
-            if n == self.refresh_var.get():
-                config['refreshHours'] = v
-                break
-        
+        config = self.build_board_config()
+
+        self.save_local_config()
         response = self.send_command(f"SET_CONFIG:{json.dumps(config, separators=(',', ':'))}", wait_for="SUCCESS", timeout=10)
-        
+
         if not response or "SUCCESS" not in response:
             self.hide_loading()
             self.show_popup(f"{F} Error", "Failed to save configuration.", popup_type="error")
@@ -1128,44 +1476,34 @@ class IbisSetupWizard:
         # Auto-advance
         if self.strava_complete:
             self.show_popup(f"{F} WiFi Updated", "WiFi credentials saved and tested!", popup_type="success")
-            self.show_step(3)  # Strava already done -> Personalize
+            self.show_step(3)  # Garmin already done -> Personalize
         else:
-            self.show_popup(f"{F} WiFi Saved", "WiFi credentials saved and tested!\n\nNow let's connect Strava.", popup_type="success")
-            self.show_step(2)  # Next: Strava
+            self.show_popup(f"{F} WiFi Saved", "WiFi credentials saved and tested!\n\nNow let's connect Garmin.", popup_type="success")
+            self.show_step(2)  # Next: Garmin
     
     def save_strava(self):
-        has_strava = bool(self.client_id_var.get().strip() and 
-                         self.client_secret_var.get().strip() and 
-                         self.refresh_token_var.get().strip())
-        
-        if not has_strava:
-            if self.show_popup(f"{F} Skip Strava?", 
-                    "No Strava credentials entered.\n\nSkip Strava connection and continue?",
-                    popup_type="warning", yes_no=True):
-                self.show_step(3)
+        self.show_loading(f"{F} Saving Garmin {F}", self.get_funny_message('save_config'))
+
+        try:
+            registered = self.provision_garmin_middleware()
+        except Exception as e:
+            self.hide_loading()
+            self.show_popup(f"{F} Garmin Setup Failed", str(e), popup_type="error")
             return
-        
-        self.show_loading(f"{F} Saving Strava {F}", self.get_funny_message('save_config'))
-        
-        time.sleep(0.5)
-        
-        config = {
-            'ssid': self.ssid_var.get().strip(),
-            'password': self.password_var.get(),
-            'name': self.name_var.get().strip(),
-            'title': '',
-            'clientID': self.client_id_var.get().strip(),
-            'clientSecret': self.client_secret_var.get().strip(),
-            'refreshToken': self.refresh_token_var.get().strip(),
-            'sport': self.sport_var.get(),
-            'goal': self.get_goal_value() or 1000,
-            'trackPeriod': TRACK_PERIODS.index(self.period_var.get())
-        }
-        for n, v, _ in REFRESH_OPTIONS:
-            if n == self.refresh_var.get():
-                config['refreshHours'] = v
-                break
-        
+
+        if not registered:
+            self.hide_loading()
+            self.show_popup(
+                f"{F} Garmin MFA Required",
+                "Garmin asked for a multi-factor code.\n\nEnter the code in the MFA field and click Save Garmin again.",
+                popup_type="warning",
+            )
+            self.show_step(2)
+            return
+
+        config = self.build_board_config()
+
+        self.save_local_config()
         response = self.send_command(f"SET_CONFIG:{json.dumps(config, separators=(',', ':'))}", wait_for="SUCCESS", timeout=15)
         
         self.hide_loading()
@@ -1174,13 +1512,13 @@ class IbisSetupWizard:
             if response and ("Configuration saved" in response or "saved" in response.lower() or "OK" in response):
                 self.strava_complete = True
                 self.update_step_indicator()
-                self.show_popup(f"{F} Strava Saved", 
-                               "Strava credentials saved!\n\n(Minor communication glitch ignored)", 
+                self.show_popup(f"{F} Garmin Saved", 
+                               "Garmin middleware token saved!\n\n(Minor communication glitch ignored)", 
                                popup_type="success")
                 self.show_step(3)
             else:
                 self.show_popup(f"{F} Save Error", 
-                               "Communication error while saving.\n\nYou can:\n\u2022 Try 'Save Strava' again\n\u2022 Skip to 'Finish Setup' (it will save then)", 
+                               "Communication error while saving.\n\nYou can:\n\u2022 Try 'Save Garmin' again\n\u2022 Skip to 'Finish Setup' (it will save then)", 
                                popup_type="warning")
             return
         
@@ -1188,21 +1526,19 @@ class IbisSetupWizard:
         self.update_step_indicator()
         
         # Auto-advance to Personalize
-        self.show_popup(f"{F} Strava Saved", "Strava credentials saved!", popup_type="success")
+        self.show_popup(f"{F} Garmin Saved", "Garmin middleware token saved!", popup_type="success")
         self.show_step(3)
     
     def finish_setup(self):
         has_wifi = bool(self.ssid_var.get().strip())
-        has_strava = bool(self.client_id_var.get().strip() and 
-                         self.client_secret_var.get().strip() and 
-                         self.refresh_token_var.get().strip())
+        has_dashboard = self.has_dashboard_credentials()
         
-        if not has_wifi or not has_strava:
+        if not has_wifi or not has_dashboard:
             missing = []
             if not has_wifi:
                 missing.append("WiFi")
-            if not has_strava:
-                missing.append("Strava")
+            if not has_dashboard:
+                missing.append("Garmin")
             self.show_popup(f"{F} Missing Settings", 
                            f"Please enter and save {' and '.join(missing)}\ncredentials first!",
                            popup_type="warning")
@@ -1220,45 +1556,33 @@ class IbisSetupWizard:
         
         self.show_loading(f"{F} Finishing Setup {F}", self.get_funny_message('save_config'), show_dashboard_msg=True)
         
-        config = {
-            'ssid': self.ssid_var.get().strip(),
-            'password': self.password_var.get(),
-            'name': self.name_var.get().strip(),
-            'title': '',
-            'clientID': self.client_id_var.get().strip(),
-            'clientSecret': self.client_secret_var.get().strip(),
-            'refreshToken': self.refresh_token_var.get().strip(),
-            'sport': self.sport_var.get(),
-            'goal': self.get_goal_value() or 1000,
-            'trackPeriod': TRACK_PERIODS.index(self.period_var.get())
-        }
-        for n, v, _ in REFRESH_OPTIONS:
-            if n == self.refresh_var.get():
-                config['refreshHours'] = v
-                break
-        
+        config = self.build_board_config()
+
+        self.save_local_config()
         response = self.send_command(f"SET_CONFIG:{json.dumps(config, separators=(',', ':'))}", wait_for="SUCCESS", timeout=10)
-        
+
         if not response or "SUCCESS" not in response:
             self.hide_loading()
             self.show_popup(f"{F} Error {F}", "Failed to save configuration.", popup_type="error")
             return
         
-        has_strava = bool(config['clientID'] and config['clientSecret'] and config['refreshToken'])
+        has_dashboard = bool(config.get('ibisToken') and config.get('middlewareUrl') and config.get('middlewareAppKey'))
+        has_legacy_strava = bool(config['clientID'] and config['clientSecret'] and config['refreshToken'])
         has_wifi = bool(config['ssid'])
         
-        if has_strava and has_wifi:
+        if has_wifi and (has_dashboard or has_legacy_strava):
             self.update_loading(self.get_funny_message('fetch_strava'))
-            strava_response = self.send_command("FETCH_STRAVA", wait_for="DASHBOARD_DRAWN", timeout=90)
+            fetch_command = "FETCH_DASHBOARD" if has_dashboard else "FETCH_STRAVA"
+            dashboard_response = self.send_command(fetch_command, wait_for="DASHBOARD_DRAWN", timeout=90)
             
             self.hide_loading()
             
-            if strava_response and "DASHBOARD_DRAWN" in strava_response:
+            if dashboard_response and "DASHBOARD_DRAWN" in dashboard_response:
                 self.setup_done = True
                 self.show_setup_complete_popup()
             else:
                 self.show_popup(f"{F} Almost Done", 
-                               "Settings saved but couldn't fetch Strava data.\n\n"
+                               "Settings saved but couldn't fetch Garmin data.\n\n"
                                "Try pressing BOOT button on the board\n"
                                "or click Finish Setup again.",
                                popup_type="warning")
@@ -1269,7 +1593,7 @@ class IbisSetupWizard:
             self.hide_loading()
             self.show_popup(f"{F} WiFi Saved", 
                            "WiFi settings saved!\n\n"
-                           "Add Strava credentials to see your stats.",
+                           "Add Garmin middleware settings to see your stats.",
                            popup_type="success")
         else:
             self.hide_loading()
