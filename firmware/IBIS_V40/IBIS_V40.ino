@@ -549,7 +549,9 @@ bool fetchMapImage(int areaW, int areaH, const String& sport) {
     return false;
   }
 
-  String routeColor = (sport == SPORT_RIDE) ? "0x009c35ff" : "0xff0000ff";
+  // Both sports red: on the 7-color panel red pops hardest and never fights
+  // the green parks; the column headers already color-code the sport.
+  String routeColor = "0xff0000ff";
   String pathParams;
   if (encodedPoly.length() <= 3500) {
     pathParams = "&path=weight:8%7Ccolor:0x111111ff%7Cenc:" + encodedPoly;
@@ -563,16 +565,18 @@ bool fetchMapImage(int areaW, int areaH, const String& sport) {
         "&scale=" + String(MAP_IMAGE_API_SCALE) +
         "&maptype=roadmap"
         + pathParams +
+        // Style "J": black/white roads, blue water, green parks. Roads stay
+        // grayscale so the red route is the only warm color on the map.
         "&style=feature:all%7Celement:labels%7Cvisibility:off"
         "&style=feature:administrative%7Cvisibility:off"
         "&style=feature:landscape%7Celement:geometry%7Ccolor:0xffffff"
-        "&style=feature:landscape.natural%7Celement:geometry%7Ccolor:0x86c96e"
-        "&style=feature:poi.park%7Celement:geometry%7Ccolor:0x70bf63"
+        "&style=feature:landscape.natural%7Celement:geometry%7Ccolor:0x9ed88b"
+        "&style=feature:poi.park%7Celement:geometry%7Ccolor:0x9ed88b"
         "&style=feature:poi%7Cvisibility:off"
         "&style=feature:road%7Celement:labels%7Cvisibility:off"
-        "&style=feature:road.local%7Celement:geometry%7Ccolor:0x9c9c9c"
-        "&style=feature:road.arterial%7Celement:geometry%7Ccolor:0xf6cf45"
-        "&style=feature:road.highway%7Celement:geometry%7Ccolor:0xee9b3a"
+        "&style=feature:road.local%7Celement:geometry%7Ccolor:0xdddddd"
+        "&style=feature:road.arterial%7Celement:geometry%7Ccolor:0x999999"
+        "&style=feature:road.highway%7Celement:geometry%7Ccolor:0x555555"
         "&style=feature:transit%7Cvisibility:off"
         "&style=feature:water%7Celement:geometry%7Ccolor:0xb9ddff"
         "&format=jpg-baseline"
