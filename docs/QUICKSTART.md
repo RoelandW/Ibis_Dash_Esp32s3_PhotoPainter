@@ -2,12 +2,13 @@
 
 ## Setup
 
-1. **Flash the firmware** to your ESP32-S3-PhotoPainter using Arduino IDE
-2. **Run `Ibis.exe`** on your PC (board connected via USB)
-3. **Follow the setup wizard** - enter WiFi, Strava credentials, your name, and goal
-4. **Done!** Your Strava stats will appear on the display
+1. **Flash the firmware** (`firmware/IBIS_V40/IBIS_V40.ino`) to your ESP32-S3-PhotoPainter using Arduino IDE — board settings are in the README
+2. **Deploy the middleware** ([PulseConnect](https://github.com/RoelandW/PulseConnect)) and note its URL + app key
+3. **Run `app/Ibis.py`** on your computer (board connected via USB; needs Python with pyserial + tkinter)
+4. **Follow the setup wizard** — WiFi, Garmin middleware details, your name, sport(s) and goal(s)
+5. **Done!** Your Garmin stats will appear on the display
 
-You can change your preferences anytime by running `Ibis.exe` again.
+You can change your preferences anytime by running the app again.
 
 ---
 
@@ -15,7 +16,7 @@ You can change your preferences anytime by running `Ibis.exe` again.
 
 | Button | What it does |
 |--------|--------------|
-| **BOOT** | Refresh - fetches new data from Strava |
+| **BOOT** | Refresh - fetches new data from Garmin |
 | **KEY** | Nothing (yet) |
 | **PWR** | Hold 4 seconds to power off |
 
@@ -45,7 +46,7 @@ You can change your preferences anytime by running `Ibis.exe` again.
 ## Need to Change Settings?
 
 1. Connect board to PC via USB
-2. Run `Ibis.exe`
+2. Run `app/Ibis.py`
 3. Update your preferences
 4. Click "Finish Setup"
 
@@ -53,9 +54,9 @@ You can change your preferences anytime by running `Ibis.exe` again.
 
 ## Need to Wipe Everything?
 
-**Option 1:** In `Ibis.exe` → Options tab → "Wipe Data"
+**Option 1:** In the setup app → Options tab → "Wipe Data"
 
-**Option 2:** Hold BOOT button for 5 seconds during startup
+**Option 2:** Hold BOOT button for 5+ seconds during startup
 
 ---
 

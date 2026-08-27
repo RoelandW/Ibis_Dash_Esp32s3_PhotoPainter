@@ -1,0 +1,10 @@
+# Local handoff notes for AI sessions — machine-specific, keep out of the repo
+CLAUDE.md
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
