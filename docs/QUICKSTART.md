@@ -3,7 +3,7 @@
 ## Setup
 
 1. **Flash the firmware** (`firmware/IBIS_V40/IBIS_V40.ino`) to your ESP32-S3-PhotoPainter using Arduino IDE — board settings are in the README
-2. **Deploy the middleware** ([PulseConnect](https://github.com/RoelandW/PulseConnect)) and note its URL + app key
+2. **Deploy the Garmin middleware** and note its URL + app key
 3. **Run `app/Ibis.py`** on your computer (board connected via USB; needs Python with pyserial + tkinter)
 4. **Follow the setup wizard** — WiFi, Garmin middleware details, your name, sport(s) and goal(s)
 5. **Done!** Your Garmin stats will appear on the display

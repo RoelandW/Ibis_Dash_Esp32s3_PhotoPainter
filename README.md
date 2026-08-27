@@ -20,7 +20,7 @@ That's it. That's the project.
 - **Arduino IDE** - free
 - **Ibis Setup app** - included here, also free (I made it)
 - **A Garmin account** - and a watch that feeds it
-- **Garmin middleware** - a small self-hosted FastAPI backend that logs into Garmin for you and serves the board a tidy dashboard JSON ([PulseConnect](https://github.com/RoelandW/PulseConnect), runs fine on Render's free tier)
+- **Garmin middleware** - a small self-hosted backend that logs into Garmin for you and serves the board a tidy dashboard JSON (mine runs on Render's free tier; not public yet)
 - **A Google Maps API key** *(optional)* - for the map background behind your latest route. Needs billing enabled on the Google Cloud project (the free monthly quota is plenty for a dashboard that refreshes twice a day)
 
 ---
@@ -40,7 +40,7 @@ The "hardest" part is deploying the middleware, and even that is mostly clicking
 3. Install some libraries (GxEPD2, ArduinoJson, XPowersLib, TJpg_Decoder)
 4. Set the right board settings (see below - this part matters!)
 5. Upload `firmware/IBIS_V40/IBIS_V40.ino` to your board
-6. Deploy the [middleware](https://github.com/RoelandW/PulseConnect) and note its URL + app key
+6. Deploy the Garmin middleware and note its URL + app key
 7. Run `app/Ibis.py`, connect, enter WiFi + Garmin middleware details
 8. Done. Go for a run. Or a ride. Or both — it does two sports now.
 
@@ -74,7 +74,7 @@ esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=dio,FlashSize=16M,PSRA
 
 Garmin doesn't hand out personal API keys, so the board talks to a small middleware that logs in on your behalf:
 
-1. Deploy [PulseConnect](https://github.com/RoelandW/PulseConnect) (Render free tier works) with an `APP_KEY` of your choosing
+1. Deploy the middleware (Render free tier works) with an `APP_KEY` of your choosing
 2. In the Ibis Setup app, open the **Garmin** tab
 3. Enter the middleware URL, your app key, and your Garmin email + password (plus MFA code if Garmin asks)
 4. The app registers the board and stores only a short board token — your Garmin password never touches the board or disk
