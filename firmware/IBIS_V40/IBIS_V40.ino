@@ -767,7 +767,8 @@ void loadConfiguration() {
   // Load Garmin middleware credentials
   DATA_SOURCE = preferences.getString("dataSource", "garmin_middleware");
   MIDDLEWARE_URL = preferences.getString("middlewareUrl", "");
-  MIDDLEWARE_APP_KEY = preferences.getString("middlewareAppKey", "");
+  // NVS keys are limited to 15 chars — "middlewareAppKey" (16) silently failed to store
+  MIDDLEWARE_APP_KEY = preferences.getString("mwAppKey", "");
   IBIS_TOKEN = preferences.getString("ibisToken", "");
   
   // Load user settings
@@ -2525,7 +2526,7 @@ void sendCurrentConfig() {
   doc["refreshToken"]  = preferences.getString("refreshToken", "");
   doc["dataSource"]    = preferences.getString("dataSource", "garmin_middleware");
   doc["middlewareUrl"] = preferences.getString("middlewareUrl", "");
-  doc["middlewareAppKey"] = preferences.getString("middlewareAppKey", "");
+  doc["middlewareAppKey"] = preferences.getString("mwAppKey", "");
   doc["ibisToken"]     = preferences.getString("ibisToken", "");
   doc["refreshHours"]  = preferences.getInt("refreshHours", 12);
   doc["trackPeriod"]   = preferences.getInt("trackPeriod", TRACK_YEARLY);
@@ -2534,7 +2535,7 @@ void sendCurrentConfig() {
   doc["configured"]    = (preferences.getString("ssid", "").length() > 0);
   doc["hasStrava"]     = (preferences.getString("clientID", "").length() > 0);
   doc["hasDashboard"]  = (preferences.getString("middlewareUrl", "").length() > 0 &&
-                          preferences.getString("middlewareAppKey", "").length() > 0 &&
+                          preferences.getString("mwAppKey", "").length() > 0 &&
                           preferences.getString("ibisToken", "").length() > 0);
   doc["firmwareVersion"] = "5.1";
   doc["usbIdentity"]   = "Ibis Dash";
@@ -2585,7 +2586,7 @@ void saveConfigFromSerial(String jsonStr) {
   if (doc.containsKey("refreshToken"))  { preferences.putString("refreshToken",  doc["refreshToken"].as<String>());  DBG_println("  - refreshToken saved"); }
   if (doc.containsKey("dataSource"))    { preferences.putString("dataSource",    doc["dataSource"].as<String>()); }
   if (doc.containsKey("middlewareUrl")) { preferences.putString("middlewareUrl", doc["middlewareUrl"].as<String>()); DBG_println("  - middlewareUrl saved"); }
-  if (doc.containsKey("middlewareAppKey")) { preferences.putString("middlewareAppKey", doc["middlewareAppKey"].as<String>()); DBG_println("  - middlewareAppKey saved"); }
+  if (doc.containsKey("middlewareAppKey")) { preferences.putString("mwAppKey", doc["middlewareAppKey"].as<String>()); DBG_println("  - middlewareAppKey saved"); }
   if (doc.containsKey("ibisToken"))     { preferences.putString("ibisToken",     doc["ibisToken"].as<String>());     DBG_println("  - ibisToken saved"); }
   if (doc.containsKey("refreshHours"))  { preferences.putInt   ("refreshHours",  doc["refreshHours"].as<int>()); }
   if (doc.containsKey("trackPeriod"))   { preferences.putInt   ("trackPeriod",   doc["trackPeriod"].as<int>()); }
