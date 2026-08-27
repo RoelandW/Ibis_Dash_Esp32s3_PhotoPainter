@@ -38,11 +38,14 @@
 // ║  ARDUINO IDE SETTINGS:                                                       ║
 // ║  >> Board: ESP32S3 Dev Module                                                ║
 // ║  >> Flash Mode: DIO (NOT OPI!)                                               ║
-// ║  >> USB CDC On Boot: "Disabled"                                              ║
-// ║  >> USB Mode: "USB-OTG (TinyUSB)"                                            ║
+// ║  >> Flash Size: 16MB / Partition: 3MB APP/9.9MB FATFS                        ║
+// ║  >> USB CDC On Boot: "Enabled"                                               ║
+// ║  >> USB Mode: "Hardware CDC and JTAG"  (TinyUSB mode does NOT work!)         ║
+// ║  arduino-cli FQBN: esp32:esp32:esp32s3:USBMode=hwcdc,CDCOnBoot=cdc,          ║
+// ║    FlashMode=dio,FlashSize=16M,PSRAM=opi,PartitionScheme=app3M_fat9M_16MB    ║
 // ║                                                                              ║
 // ║  Hardware: Waveshare ESP32-S3-PhotoPainter                                   ║
-// ║  ESP32 Board Version: 2.0.17                                                 ║
+// ║  ESP32 Board Version: 3.3.7 (2.0.17 no longer compiles)                      ║
 // ╚══════════════════════════════════════════════════════════════════════════════╝
 
 // =============================================================================
